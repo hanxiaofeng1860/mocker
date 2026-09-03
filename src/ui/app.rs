@@ -12,6 +12,7 @@ use crate::service::AppService;
 use crate::store::Store;
 
 use super::home;
+use super::import_view::{self, ImportState};
 use super::new_project::{self, NewProjectForm};
 use super::settings::{self, SettingsState};
 use super::workbench::{self, WorkbenchState};
@@ -24,19 +25,6 @@ pub enum Screen {
     Work { project_id: String },
     Import { project_id: String },
     Settings { back: Box<Screen> },
-}
-
-impl Screen {
-    fn placeholder(&self) -> SharedString {
-        match self {
-            Self::Empty => "Empty".into(),
-            Self::Home => "Home".into(),
-            Self::NewProject => "NewProject".into(),
-            Self::Work { project_id } => format!("Work {project_id}").into(),
-            Self::Import { project_id } => format!("Import {project_id}").into(),
-            Self::Settings { .. } => "Settings".into(),
-        }
-    }
 }
 
 struct Unconfigured;
@@ -53,6 +41,7 @@ pub struct AppView {
     pub(super) new_project: Option<NewProjectForm>,
     pub(super) settings: Option<SettingsState>,
     pub(super) work: Option<WorkbenchState>,
+    pub(super) import: Option<ImportState>,
 }
 
 impl AppView {
@@ -71,6 +60,7 @@ impl AppView {
             new_project: None,
             settings: None,
             work: None,
+            import: None,
         })
     }
 
@@ -82,6 +72,7 @@ impl AppView {
     pub(super) fn go_home_or_empty(&mut self) {
         self.new_project = None;
         self.work = None;
+        self.import = None;
         self.screen = match self.service.list_projects() {
             Ok(projects) if projects.is_empty() => Screen::Empty,
             _ => Screen::Home,
@@ -90,6 +81,13 @@ impl AppView {
 
     pub(super) fn open_work(&mut self, project_id: String) {
         self.new_project = None;
+        if self
+            .import
+            .as_ref()
+            .is_some_and(|s| s.project_id != project_id)
+        {
+            self.import = None;
+        }
         if self
             .work
             .as_ref()
@@ -114,6 +112,12 @@ impl AppView {
                 self.work = Some(WorkbenchState::new(&self.service, pid, window, cx));
             }
         }
+        if let Screen::Import { project_id } = &self.screen {
+            let pid = project_id.clone();
+            if self.import.as_ref().is_none_or(|s| s.project_id != pid) {
+                self.import = Some(ImportState::new(pid, window, cx));
+            }
+        }
         match &self.screen {
             Screen::Empty => home::empty(cx),
             Screen::Home => home::home(&self.service, cx),
@@ -125,11 +129,14 @@ impl AppView {
                 Some(state) => workbench::view(state, &self.service, cx),
                 None => div().into_any_element(),
             },
+            Screen::Import { .. } => match self.import.as_ref() {
+                Some(state) => import_view::view(state, &self.service, cx),
+                None => div().into_any_element(),
+            },
             Screen::Settings { .. } => match self.settings.as_ref() {
                 Some(state) => settings::view(state, cx),
                 None => div().into_any_element(),
             },
-            other => div().child(other.placeholder()).into_any_element(),
         }
     }
 }

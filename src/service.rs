@@ -18,7 +18,7 @@ use serde_json::{json, Map, Value};
 pub struct AppService {
     store: Arc<Mutex<Store>>,
     runtime: RuntimeHub,
-    model: Mutex<Box<dyn ModelClient + Send + Sync>>,
+    model: Arc<Mutex<Box<dyn ModelClient + Send + Sync>>>,
     // import_paste and commit_import are separate UI steps; keep the paste so source_text is the original.
     last_paste: Mutex<HashMap<String, String>>,
 }
@@ -29,7 +29,7 @@ impl AppService {
         Self {
             store,
             runtime,
-            model: Mutex::new(Box::new(model)),
+            model: Arc::new(Mutex::new(Box::new(model))),
             last_paste: Mutex::new(HashMap::new()),
         }
     }
@@ -199,18 +199,25 @@ impl AppService {
     }
 
     pub fn import_paste(&self, project_id: &str, paste: &str) -> Result<Vec<ImportDraft>> {
-        let (success_code, fail_code) = {
-            let store = lock(&self.store)?;
-            let project = store
-                .get_project(project_id)?
-                .ok_or_else(|| anyhow!("project not found: {project_id}"))?;
-            (project.success_code, project.fail_code)
-        };
-        let prompt = import_prompt(paste, &success_code, &fail_code);
-        let raw = lock(&self.model)?.complete_json(&prompt)?;
-        let drafts = validate_import(&raw)?;
-        lock(&self.last_paste)?.insert(project_id.to_string(), paste.to_string());
+        let drafts = parse_import(&self.store, &self.model, project_id, paste)?;
+        self.remember_import_paste(project_id, paste)?;
         Ok(drafts)
+    }
+
+    pub(crate) fn remember_import_paste(&self, project_id: &str, paste: &str) -> Result<()> {
+        lock(&self.last_paste)?.insert(project_id.to_string(), paste.to_string());
+        Ok(())
+    }
+
+    /// Cloneable job so the UI can run the LLM parse off the UI thread.
+    pub(crate) fn import_paste_job(
+        &self,
+        project_id: String,
+        paste: String,
+    ) -> impl FnOnce() -> Result<Vec<ImportDraft>> + Send {
+        let store = self.store.clone();
+        let model = self.model.clone();
+        move || parse_import(&store, &model, &project_id, &paste)
     }
 
     pub fn commit_import(&self, project_id: &str, drafts: Vec<ImportDraft>) -> Result<()> {
@@ -290,6 +297,24 @@ impl AppService {
         };
         self.save_scene_body(endpoint_id, kind, pretty_json(&body))
     }
+}
+
+fn parse_import(
+    store: &Mutex<Store>,
+    model: &Mutex<Box<dyn ModelClient + Send + Sync>>,
+    project_id: &str,
+    paste: &str,
+) -> Result<Vec<ImportDraft>> {
+    let (success_code, fail_code) = {
+        let store = lock(store)?;
+        let project = store
+            .get_project(project_id)?
+            .ok_or_else(|| anyhow!("project not found: {project_id}"))?;
+        (project.success_code, project.fail_code)
+    };
+    let prompt = import_prompt(paste, &success_code, &fail_code);
+    let raw = lock(model)?.complete_json(&prompt)?;
+    Ok(validate_import(&raw)?)
 }
 
 fn map_unique(err: anyhow::Error) -> anyhow::Error {
