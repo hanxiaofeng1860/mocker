@@ -33,6 +33,14 @@ impl AppService {
         lock(&self.store)?.list_projects()
     }
 
+    pub fn list_endpoints(&self, project_id: &str) -> Result<Vec<Endpoint>> {
+        lock(&self.store)?.list_endpoints(project_id)
+    }
+
+    pub fn is_running(&self, project_id: &str) -> bool {
+        self.runtime.is_running(project_id)
+    }
+
     pub fn create_project(
         &self,
         name: &str,

@@ -24,6 +24,10 @@ pub fn apply_paper_theme(cx: &mut App) {
     theme.list = background;
     theme.list_active = primary.opacity(0.16);
     theme.danger = accent;
+    theme.popover = hsla(0xF8F3E8);
+    theme.popover_foreground = hsla(0x2A2620);
+    theme.muted = hsla(0xE8DFD0);
+    theme.muted_foreground = hsla(0x7A6F64);
     // TitleBar reads these, not `background`.
     theme.title_bar = background;
     theme.title_bar_border = border;
@@ -47,6 +51,10 @@ pub fn apply_ink_theme(cx: &mut App) {
     theme.list = background;
     theme.list_active = primary.opacity(0.24);
     theme.danger = accent;
+    theme.popover = hsla(0x252525);
+    theme.popover_foreground = hsla(0xD4D4D4);
+    theme.muted = hsla(0x2A2A2A);
+    theme.muted_foreground = hsla(0x999999);
     theme.title_bar = background;
     theme.title_bar_border = border;
 }

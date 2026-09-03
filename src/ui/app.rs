@@ -11,6 +11,9 @@ use crate::llm::{LlmError, ModelClient};
 use crate::service::AppService;
 use crate::store::Store;
 
+use super::home;
+use super::new_project::{self, NewProjectForm};
+
 #[derive(Clone, Debug)]
 pub enum Screen {
     Empty,
@@ -43,9 +46,9 @@ impl ModelClient for Unconfigured {
 }
 
 pub struct AppView {
-    #[allow(dead_code)] // Task 9+ screens call into the service.
-    service: AppService,
-    screen: Screen,
+    pub(super) service: AppService,
+    pub(super) screen: Screen,
+    pub(super) new_project: Option<NewProjectForm>,
 }
 
 impl AppView {
@@ -57,7 +60,11 @@ impl AppView {
             Ok(projects) if projects.is_empty() => Screen::Empty,
             _ => Screen::Home,
         };
-        Ok(Self { service, screen })
+        Ok(Self {
+            service,
+            screen,
+            new_project: None,
+        })
     }
 
     fn open_settings(&mut self) {
@@ -69,6 +76,56 @@ impl AppView {
             back: Box::new(back),
         };
     }
+
+    pub(super) fn go_new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_project = Some(NewProjectForm::new(window, cx));
+        self.screen = Screen::NewProject;
+    }
+
+    pub(super) fn go_home_or_empty(&mut self) {
+        self.new_project = None;
+        self.screen = match self.service.list_projects() {
+            Ok(projects) if projects.is_empty() => Screen::Empty,
+            _ => Screen::Home,
+        };
+    }
+
+    pub(super) fn open_work(&mut self, project_id: String) {
+        self.new_project = None;
+        self.screen = Screen::Work { project_id };
+    }
+
+    fn render_body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if matches!(self.screen, Screen::NewProject) && self.new_project.is_none() {
+            self.new_project = Some(NewProjectForm::new(window, cx));
+        }
+        match &self.screen {
+            Screen::Empty => home::empty(cx),
+            Screen::Home => home::home(&self.service, cx),
+            Screen::NewProject => match self.new_project.as_ref() {
+                Some(form) => new_project::view(form, cx),
+                None => div().into_any_element(),
+            },
+            Screen::Work { project_id } => work_stub(project_id, cx),
+            other => div().child(other.placeholder()).into_any_element(),
+        }
+    }
+}
+
+fn work_stub(project_id: &str, cx: &mut Context<AppView>) -> AnyElement {
+    v_flex()
+        .gap_3()
+        .child(
+            Button::new("back-work")
+                .ghost()
+                .label("← 项目")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.go_home_or_empty();
+                    cx.notify();
+                })),
+        )
+        .child(format!("Work {project_id}"))
+        .into_any_element()
 }
 
 fn mocker_db_path() -> Result<std::path::PathBuf> {
@@ -79,7 +136,7 @@ fn mocker_db_path() -> Result<std::path::PathBuf> {
 }
 
 impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
             .bg(cx.theme().background)
@@ -99,8 +156,10 @@ impl Render for AppView {
                 div()
                     .id("body")
                     .flex_1()
-                    .p_4()
-                    .child(self.screen.placeholder()),
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p_5()
+                    .child(self.render_body(window, cx)),
             )
     }
 }

@@ -1,4 +1,6 @@
 mod app;
+mod home;
+mod new_project;
 mod theme;
 
 pub use app::{AppView, Screen};

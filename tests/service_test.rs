@@ -107,8 +107,11 @@ async fn create_start_then_save_scene_body_hot_reloads() {
     svc.save_endpoint(endpoint.clone()).unwrap();
     svc.save_scene_body(&endpoint.id, SceneKind::Success, SUCCESS_BODY.into())
         .unwrap();
+    assert_eq!(svc.list_endpoints(&project.id).unwrap().len(), 1);
+    assert!(!svc.is_running(&project.id));
 
     svc.start(&project.id).unwrap();
+    assert!(svc.is_running(&project.id));
 
     let url = format!("http://127.0.0.1:{port}/api/queryPhoneHomeData");
     let client = reqwest::Client::new();
@@ -136,6 +139,7 @@ async fn create_start_then_save_scene_body_hot_reloads() {
     assert!(logs.iter().all(|l| l.hit));
 
     svc.stop(&project.id).unwrap();
+    assert!(!svc.is_running(&project.id));
 }
 
 #[test]
