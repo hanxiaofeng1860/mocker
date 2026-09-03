@@ -4,7 +4,11 @@ use crate::domain::SceneKind;
 
 pub fn encode_code(code: &str) -> Value {
     if regex_simple_int(code) {
-        Value::Number(code.parse::<i64>().unwrap().into())
+        match code.parse::<i64>() {
+            Ok(n) => Value::Number(n.into()),
+            // Spec regex allows digits past i64; keep as string rather than panic or f64.
+            Err(_) => Value::String(code.to_string()),
+        }
     } else {
         Value::String(code.to_string())
     }
@@ -63,13 +67,19 @@ fn empty_from_success(success_code: &str, success_body: &Value) -> Value {
     let data = match data {
         Value::Array(_) => json!([]),
         Value::Object(mut m) => {
-            if m.contains_key("list") {
-                m.insert("list".into(), json!([]));
+            let has_list = m.contains_key("list");
+            let has_total = m.contains_key("total");
+            if !has_list && !has_total {
+                json!({})
+            } else {
+                if has_list {
+                    m.insert("list".into(), json!([]));
+                }
+                if has_total {
+                    m.insert("total".into(), json!(0));
+                }
+                Value::Object(m)
             }
-            if m.contains_key("total") {
-                m.insert("total".into(), json!(0));
-            }
-            Value::Object(m)
         }
         _ => json!({}),
     };
