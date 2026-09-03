@@ -249,7 +249,7 @@ fn push_field(item: &Value, loc: FieldLoc, parent_id: Option<String>, out: &mut 
     }
 }
 
-fn strip_markdown_fences(raw: &str) -> &str {
+pub(crate) fn strip_markdown_fences(raw: &str) -> &str {
     let mut s = raw.trim();
     if let Some(rest) = s.strip_prefix("```") {
         let rest = rest

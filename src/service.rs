@@ -4,13 +4,16 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use anyhow::{anyhow, Result};
 
 use crate::domain::{
-    Endpoint, Field, GlobalSettings, HeaderKv, Project, RequestLog, Scene, SceneKind,
+    Endpoint, Field, FieldLoc, GlobalSettings, HeaderKv, Project, RequestLog, Scene, SceneKind,
 };
-use crate::import::{attach_scenes, import_prompt, validate_import, ImportDraft};
+use crate::import::{
+    attach_scenes, import_prompt, strip_markdown_fences, validate_import, ImportDraft,
+};
 use crate::llm::ModelClient;
 use crate::runtime::RuntimeHub;
-use crate::scenes::scene_http_status;
+use crate::scenes::{default_success_envelope, generate_non_success, scene_http_status};
 use crate::store::{self, Store};
+use serde_json::{json, Map, Value};
 
 pub struct AppService {
     store: Arc<Mutex<Store>>,
@@ -52,8 +55,34 @@ impl AppService {
         lock(&self.store)?.list_endpoints(project_id)
     }
 
+    pub fn get_project(&self, id: &str) -> Result<Option<Project>> {
+        lock(&self.store)?.get_project(id)
+    }
+
+    pub fn get_endpoint(&self, id: &str) -> Result<Option<Endpoint>> {
+        lock(&self.store)?.get_endpoint(id)
+    }
+
+    pub fn list_fields(&self, endpoint_id: &str) -> Result<Vec<Field>> {
+        lock(&self.store)?.list_fields(endpoint_id)
+    }
+
+    pub fn get_scene(&self, endpoint_id: &str, kind: SceneKind) -> Result<Option<Scene>> {
+        lock(&self.store)?.get_scene(endpoint_id, kind)
+    }
+
     pub fn is_running(&self, project_id: &str) -> bool {
         self.runtime.is_running(project_id)
+    }
+
+    pub fn save_project(&self, project: Project) -> Result<()> {
+        let id = project.id.clone();
+        lock(&self.store)?.upsert_project(&project)?;
+        self.runtime.refresh(&id)
+    }
+
+    pub fn clear_logs(&self, project_id: &str) -> Result<()> {
+        lock(&self.store)?.clear_logs(project_id)
     }
 
     pub fn create_project(
@@ -86,8 +115,53 @@ impl AppService {
 
     pub fn save_endpoint(&self, ep: Endpoint) -> Result<()> {
         let project_id = ep.project_id.clone();
-        lock(&self.store)?.upsert_endpoint(&ep)?;
+        lock(&self.store)?
+            .upsert_endpoint(&ep)
+            .map_err(map_unique)?;
         self.runtime.refresh(&project_id)
+    }
+
+    pub fn create_endpoint(&self, project_id: &str) -> Result<Endpoint> {
+        let (project, endpoints) = {
+            let store = lock(&self.store)?;
+            let project = store
+                .get_project(project_id)?
+                .ok_or_else(|| anyhow!("project not found: {project_id}"))?;
+            let endpoints = store.list_endpoints(project_id)?;
+            (project, endpoints)
+        };
+        let endpoint = Endpoint {
+            id: store::new_id(),
+            project_id: project_id.to_string(),
+            method: "POST".into(),
+            path: unused_path(&endpoints),
+            name: "新接口".into(),
+            notes: String::new(),
+            source_text: String::new(),
+            deprecated: false,
+            enabled: true,
+            current_scene: SceneKind::Success,
+        };
+        let success = default_success_envelope(&project.success_code);
+        {
+            let store = lock(&self.store)?;
+            store.upsert_endpoint(&endpoint).map_err(map_unique)?;
+            for kind in SceneKind::all() {
+                store.upsert_scene(&Scene {
+                    endpoint_id: endpoint.id.clone(),
+                    kind,
+                    http_status: scene_http_status(kind),
+                    body_json: pretty_json(&generate_non_success(
+                        kind,
+                        &project.success_code,
+                        &project.fail_code,
+                        &success,
+                    )),
+                })?;
+            }
+        }
+        self.runtime.refresh(project_id)?;
+        Ok(endpoint)
     }
 
     pub fn save_scene_body(&self, endpoint_id: &str, kind: SceneKind, body: String) -> Result<()> {
@@ -182,6 +256,108 @@ impl AppService {
 
     pub fn logs(&self, project_id: &str) -> Result<Vec<RequestLog>> {
         lock(&self.store)?.list_logs(project_id)
+    }
+
+    pub fn apply_generated_success(&self, endpoint_id: &str, raw: &str) -> Result<()> {
+        let value = parse_generated_success(raw)?;
+        self.save_scene_body(endpoint_id, SceneKind::Success, pretty_json(&value))
+    }
+
+    pub fn regenerate_scene_from_fields(&self, endpoint_id: &str, kind: SceneKind) -> Result<()> {
+        let (project, fields, success_body) = {
+            let store = lock(&self.store)?;
+            let endpoint = store
+                .get_endpoint(endpoint_id)?
+                .ok_or_else(|| anyhow!("endpoint not found: {endpoint_id}"))?;
+            let project = store
+                .get_project(&endpoint.project_id)?
+                .ok_or_else(|| anyhow!("project not found: {}", endpoint.project_id))?;
+            let fields = store.list_fields(endpoint_id)?;
+            let success_body = store
+                .get_scene(endpoint_id, SceneKind::Success)?
+                .and_then(|s| serde_json::from_str(&s.body_json).ok())
+                .unwrap_or_else(|| default_success_envelope(&project.success_code));
+            (project, fields, success_body)
+        };
+        let body = match kind {
+            SceneKind::Success => success_from_fields(&project.success_code, &fields),
+            other => generate_non_success(
+                other,
+                &project.success_code,
+                &project.fail_code,
+                &success_body,
+            ),
+        };
+        self.save_scene_body(endpoint_id, kind, pretty_json(&body))
+    }
+}
+
+fn map_unique(err: anyhow::Error) -> anyhow::Error {
+    let s = err.to_string();
+    if s.contains("UNIQUE constraint failed") {
+        anyhow!("同一项目下 method + path 不能重复")
+    } else {
+        err
+    }
+}
+
+fn unused_path(existing: &[Endpoint]) -> String {
+    for i in 1.. {
+        let path = if i == 1 {
+            "/untitled".to_string()
+        } else {
+            format!("/untitled-{i}")
+        };
+        if !existing
+            .iter()
+            .any(|e| e.method.eq_ignore_ascii_case("POST") && e.path == path)
+        {
+            return path;
+        }
+    }
+    "/untitled".into()
+}
+
+fn pretty_json(value: &Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+pub(crate) fn parse_generated_success(raw: &str) -> Result<Value> {
+    if let Ok(drafts) = validate_import(raw) {
+        if let Some(draft) = drafts.into_iter().next() {
+            return Ok(draft.success_body);
+        }
+    }
+    let stripped = strip_markdown_fences(raw);
+    serde_json::from_str(stripped).map_err(|e| anyhow!("模型输出无法解析为 JSON: {e}"))
+}
+
+pub(crate) fn success_from_fields(success_code: &str, fields: &[Field]) -> Value {
+    let mut data = Map::new();
+    for field in fields {
+        if field.location != FieldLoc::Response || field.parent_id.is_some() {
+            continue;
+        }
+        let name = field.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        data.insert(name.to_string(), sample_value(&field.type_name));
+    }
+    json!({
+        "code": crate::scenes::encode_code(success_code),
+        "msg": "成功",
+        "data": Value::Object(data),
+    })
+}
+
+fn sample_value(type_name: &str) -> Value {
+    match type_name.trim().to_ascii_lowercase().as_str() {
+        "integer" | "int" | "long" | "number" => json!(0),
+        "boolean" | "bool" => json!(false),
+        "array" | "list" => json!([]),
+        "object" | "map" => json!({}),
+        _ => json!(""),
     }
 }
 

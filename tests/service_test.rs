@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use mocker::domain::{Endpoint, FieldLoc, GlobalSettings, SceneKind};
+use mocker::domain::{Endpoint, Field, FieldLoc, GlobalSettings, RequestLog, SceneKind};
 use mocker::llm::{LlmError, ModelClient};
 use mocker::service::AppService;
 use mocker::store::{self, Store};
@@ -229,4 +229,136 @@ fn set_model_replaces_client_for_import() {
     .unwrap();
     let drafts = svc.import_paste(&project.id, "paste").unwrap();
     assert_eq!(drafts.len(), 1);
+}
+
+#[test]
+fn create_endpoint_writes_four_scenes_and_unique_paths() {
+    let (_dir, store, svc) = new_service(Noop);
+    let project = svc
+        .create_project("phone", 19001, "0000", "9999", Vec::new())
+        .unwrap();
+    let a = svc.create_endpoint(&project.id).unwrap();
+    let b = svc.create_endpoint(&project.id).unwrap();
+    assert_eq!(a.method, "POST");
+    assert_eq!(a.path, "/untitled");
+    assert_eq!(b.path, "/untitled-2");
+    assert_eq!(a.name, "新接口");
+    for kind in SceneKind::all() {
+        let scene = store
+            .lock()
+            .unwrap()
+            .get_scene(&a.id, kind)
+            .unwrap()
+            .expect("scene");
+        assert_eq!(scene.endpoint_id, a.id);
+        let body: Value = serde_json::from_str(&scene.body_json).unwrap();
+        match kind {
+            SceneKind::Success => assert_eq!(body["msg"], "成功"),
+            SceneKind::Empty => assert_eq!(body["code"], "0000"),
+            SceneKind::ParamError => {
+                assert_eq!(scene.http_status, 400);
+                assert_eq!(body["msg"], "参数错误");
+            }
+            SceneKind::BusinessError => assert_eq!(body["msg"], "失败"),
+        }
+    }
+}
+
+#[test]
+fn regenerate_scene_from_fields_builds_success_data() {
+    let (_dir, _, svc) = new_service(Noop);
+    let project = svc
+        .create_project("phone", 19002, "0000", "9999", Vec::new())
+        .unwrap();
+    let ep = svc.create_endpoint(&project.id).unwrap();
+    svc.save_fields(
+        &ep.id,
+        vec![Field {
+            id: store::new_id(),
+            endpoint_id: ep.id.clone(),
+            location: FieldLoc::Response,
+            name: "todayInbound".into(),
+            name_zh: "今日呼入".into(),
+            type_name: "Integer".into(),
+            required: true,
+            comment: String::new(),
+            enum_values: Vec::new(),
+            parent_id: None,
+        }],
+    )
+    .unwrap();
+    svc.regenerate_scene_from_fields(&ep.id, SceneKind::Success)
+        .unwrap();
+    let scene = svc
+        .get_scene(&ep.id, SceneKind::Success)
+        .unwrap()
+        .expect("scene");
+    let body: Value = serde_json::from_str(&scene.body_json).unwrap();
+    assert_eq!(body["code"], "0000");
+    assert_eq!(body["data"]["todayInbound"], json!(0));
+
+    svc.regenerate_scene_from_fields(&ep.id, SceneKind::ParamError)
+        .unwrap();
+    let err = svc
+        .get_scene(&ep.id, SceneKind::ParamError)
+        .unwrap()
+        .expect("scene");
+    let err_body: Value = serde_json::from_str(&err.body_json).unwrap();
+    assert_eq!(err_body["msg"], "参数错误");
+}
+
+#[test]
+fn apply_generated_success_accepts_import_json_and_raw_object() {
+    let (_dir, _, svc) = new_service(Noop);
+    let project = svc
+        .create_project("phone", 19003, "0000", "9999", Vec::new())
+        .unwrap();
+    let ep = svc.create_endpoint(&project.id).unwrap();
+    svc.apply_generated_success(&ep.id, IMPORT_JSON).unwrap();
+    let scene = svc
+        .get_scene(&ep.id, SceneKind::Success)
+        .unwrap()
+        .expect("scene");
+    let body: Value = serde_json::from_str(&scene.body_json).unwrap();
+    assert_eq!(body["data"]["total"], json!(2));
+
+    svc.apply_generated_success(&ep.id, r#"{"code":"0000","msg":"成功","data":{"ok":true}}"#)
+        .unwrap();
+    let scene = svc
+        .get_scene(&ep.id, SceneKind::Success)
+        .unwrap()
+        .expect("scene");
+    let body: Value = serde_json::from_str(&scene.body_json).unwrap();
+    assert_eq!(body["data"]["ok"], json!(true));
+}
+
+#[test]
+fn clear_logs_via_service() {
+    let (_dir, store, svc) = new_service(Noop);
+    let project = svc
+        .create_project("phone", 19004, "0000", "9999", Vec::new())
+        .unwrap();
+    store
+        .lock()
+        .unwrap()
+        .append_log(&RequestLog {
+            id: 0,
+            project_id: project.id.clone(),
+            at: "t".into(),
+            method: "POST".into(),
+            url: "/x".into(),
+            req_headers: "{}".into(),
+            req_body: String::new(),
+            hit: false,
+            endpoint_id: None,
+            scene: None,
+            status: 404,
+            res_body: String::new(),
+            elapsed_ms: 0,
+            missing_default_headers: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(svc.logs(&project.id).unwrap().len(), 1);
+    svc.clear_logs(&project.id).unwrap();
+    assert!(svc.logs(&project.id).unwrap().is_empty());
 }

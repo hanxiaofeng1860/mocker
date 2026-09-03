@@ -173,3 +173,19 @@ fn trim_logs_keeps_newest_500_and_drops_oldest() {
     assert_eq!(logs[0].url, "/n/504");
     assert_eq!(logs.last().unwrap().url, "/n/5");
 }
+
+#[test]
+fn clear_logs_deletes_only_that_project() {
+    let (_dir, store) = open_tmp();
+    let a = sample_project();
+    let mut b = sample_project();
+    b.id = store::new_id();
+    b.port = 18081;
+    store.upsert_project(&a).unwrap();
+    store.upsert_project(&b).unwrap();
+    store.append_log(&sample_log(&a.id, 1)).unwrap();
+    store.append_log(&sample_log(&b.id, 2)).unwrap();
+    store.clear_logs(&a.id).unwrap();
+    assert!(store.list_logs(&a.id).unwrap().is_empty());
+    assert_eq!(store.list_logs(&b.id).unwrap().len(), 1);
+}

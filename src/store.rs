@@ -385,6 +385,14 @@ impl Store {
         collect_rows(rows)
     }
 
+    pub fn clear_logs(&self, project_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM request_logs WHERE project_id = ?1",
+            params![project_id],
+        )?;
+        Ok(())
+    }
+
     pub fn trim_logs(&self, project_id: &str) -> Result<()> {
         // OFFSET LOG_CAP-1 is the oldest id among the newest LOG_CAP rows.
         let cutoff: Option<i64> = self

@@ -14,6 +14,7 @@ use crate::store::Store;
 use super::home;
 use super::new_project::{self, NewProjectForm};
 use super::settings::{self, SettingsState};
+use super::workbench::{self, WorkbenchState};
 
 #[derive(Clone, Debug)]
 pub enum Screen {
@@ -51,6 +52,7 @@ pub struct AppView {
     pub(super) screen: Screen,
     pub(super) new_project: Option<NewProjectForm>,
     pub(super) settings: Option<SettingsState>,
+    pub(super) work: Option<WorkbenchState>,
 }
 
 impl AppView {
@@ -68,6 +70,7 @@ impl AppView {
             screen,
             new_project: None,
             settings: None,
+            work: None,
         })
     }
 
@@ -78,6 +81,7 @@ impl AppView {
 
     pub(super) fn go_home_or_empty(&mut self) {
         self.new_project = None;
+        self.work = None;
         self.screen = match self.service.list_projects() {
             Ok(projects) if projects.is_empty() => Screen::Empty,
             _ => Screen::Home,
@@ -86,6 +90,13 @@ impl AppView {
 
     pub(super) fn open_work(&mut self, project_id: String) {
         self.new_project = None;
+        if self
+            .work
+            .as_ref()
+            .is_none_or(|w| w.project_id != project_id)
+        {
+            self.work = None;
+        }
         self.screen = Screen::Work { project_id };
     }
 
@@ -96,6 +107,13 @@ impl AppView {
         if matches!(self.screen, Screen::Settings { .. }) && self.settings.is_none() {
             self.settings = Some(SettingsState::new(&self.service, window, cx));
         }
+        if let Screen::Work { project_id } = &self.screen {
+            let pid = project_id.clone();
+            if self.work.as_ref().is_none_or(|w| w.project_id != pid) {
+                self.work = None;
+                self.work = Some(WorkbenchState::new(&self.service, pid, window, cx));
+            }
+        }
         match &self.screen {
             Screen::Empty => home::empty(cx),
             Screen::Home => home::home(&self.service, cx),
@@ -103,7 +121,10 @@ impl AppView {
                 Some(form) => new_project::view(form, cx),
                 None => div().into_any_element(),
             },
-            Screen::Work { project_id } => work_stub(project_id, cx),
+            Screen::Work { .. } => match self.work.as_ref() {
+                Some(state) => workbench::view(state, &self.service, cx),
+                None => div().into_any_element(),
+            },
             Screen::Settings { .. } => match self.settings.as_ref() {
                 Some(state) => settings::view(state, cx),
                 None => div().into_any_element(),
@@ -111,22 +132,6 @@ impl AppView {
             other => div().child(other.placeholder()).into_any_element(),
         }
     }
-}
-
-fn work_stub(project_id: &str, cx: &mut Context<AppView>) -> AnyElement {
-    v_flex()
-        .gap_3()
-        .child(
-            Button::new("back-work")
-                .ghost()
-                .label("← 项目")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.go_home_or_empty();
-                    cx.notify();
-                })),
-        )
-        .child(format!("Work {project_id}"))
-        .into_any_element()
 }
 
 fn mocker_db_path() -> Result<std::path::PathBuf> {
