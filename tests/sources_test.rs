@@ -2,7 +2,9 @@ use std::fs;
 use std::path::Path;
 
 use mocker::domain::GlobalSettings;
-use mocker::sources::{scan_sources, CredentialFrom, CredentialKind, ModelSource, Protocol};
+use mocker::sources::{
+    home_dir, scan_sources, CredentialFrom, CredentialKind, ModelSource, Protocol,
+};
 use tempfile::TempDir;
 
 const CLAUDE_TOKEN: &str = "sk-ant-fixture-secret-TOKEN";
@@ -190,4 +192,10 @@ fn selected_claude_code_settings_json_does_not_contain_token() {
     let json = serde_json::to_string(&settings).unwrap();
     assert!(json.contains("claude-code"));
     assert!(!json.contains(CLAUDE_TOKEN));
+}
+
+#[test]
+fn home_dir_resolves() {
+    let home = home_dir();
+    assert!(!home.as_os_str().is_empty());
 }

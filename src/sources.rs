@@ -37,6 +37,16 @@ pub enum CredentialKind {
     GrokModel { id: String },
 }
 
+pub fn home_dir() -> PathBuf {
+    if let Some(dirs) = directories::UserDirs::new() {
+        return dirs.home_dir().to_path_buf();
+    }
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
 pub fn scan_sources(home: &Path) -> Vec<ModelSource> {
     let mut out = Vec::new();
     scan_claude(home, &mut out);

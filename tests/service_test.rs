@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use mocker::domain::{Endpoint, FieldLoc, SceneKind};
+use mocker::domain::{Endpoint, FieldLoc, GlobalSettings, SceneKind};
 use mocker::llm::{LlmError, ModelClient};
 use mocker::service::AppService;
 use mocker::store::{self, Store};
@@ -196,4 +196,37 @@ fn import_paste_then_commit_writes_endpoints_fields_scenes_and_source_text() {
             SceneKind::BusinessError => assert_eq!(scene.http_status, 200),
         }
     }
+}
+
+#[test]
+fn load_save_settings_round_trip() {
+    let (_dir, _, svc) = new_service(Noop);
+    let settings = GlobalSettings {
+        selected_source_id: "manual".into(),
+        selected_model: "gpt".into(),
+        manual_base_url: "http://127.0.0.1:1".into(),
+        manual_api_key: "sk-test".into(),
+        manual_protocol: "openai-chat".into(),
+        manual_model: "gpt".into(),
+    };
+    svc.save_settings(&settings).unwrap();
+    let loaded = svc.load_settings().unwrap();
+    assert_eq!(loaded.selected_source_id, "manual");
+    assert_eq!(loaded.manual_api_key, "sk-test");
+    assert_eq!(loaded.manual_protocol, "openai-chat");
+}
+
+#[test]
+fn set_model_replaces_client_for_import() {
+    let (_dir, _, svc) = new_service(Noop);
+    let project = svc
+        .create_project("phone", 19999, "0000", "9999", Vec::new())
+        .unwrap();
+    assert!(svc.import_paste(&project.id, "paste").is_err());
+    svc.set_model(Fake {
+        json: IMPORT_JSON.into(),
+    })
+    .unwrap();
+    let drafts = svc.import_paste(&project.id, "paste").unwrap();
+    assert_eq!(drafts.len(), 1);
 }

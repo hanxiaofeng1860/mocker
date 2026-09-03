@@ -13,6 +13,7 @@ use crate::store::Store;
 
 use super::home;
 use super::new_project::{self, NewProjectForm};
+use super::settings::{self, SettingsState};
 
 #[derive(Clone, Debug)]
 pub enum Screen {
@@ -49,6 +50,7 @@ pub struct AppView {
     pub(super) service: AppService,
     pub(super) screen: Screen,
     pub(super) new_project: Option<NewProjectForm>,
+    pub(super) settings: Option<SettingsState>,
 }
 
 impl AppView {
@@ -56,6 +58,7 @@ impl AppView {
         let path = mocker_db_path()?;
         let store = Arc::new(Mutex::new(Store::open(path)?));
         let service = AppService::new(store, Unconfigured);
+        settings::apply_saved_client(&service);
         let screen = match service.list_projects() {
             Ok(projects) if projects.is_empty() => Screen::Empty,
             _ => Screen::Home,
@@ -64,17 +67,8 @@ impl AppView {
             service,
             screen,
             new_project: None,
+            settings: None,
         })
-    }
-
-    fn open_settings(&mut self) {
-        if matches!(self.screen, Screen::Settings { .. }) {
-            return;
-        }
-        let back = self.screen.clone();
-        self.screen = Screen::Settings {
-            back: Box::new(back),
-        };
     }
 
     pub(super) fn go_new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -99,6 +93,9 @@ impl AppView {
         if matches!(self.screen, Screen::NewProject) && self.new_project.is_none() {
             self.new_project = Some(NewProjectForm::new(window, cx));
         }
+        if matches!(self.screen, Screen::Settings { .. }) && self.settings.is_none() {
+            self.settings = Some(SettingsState::new(&self.service, window, cx));
+        }
         match &self.screen {
             Screen::Empty => home::empty(cx),
             Screen::Home => home::home(&self.service, cx),
@@ -107,6 +104,10 @@ impl AppView {
                 None => div().into_any_element(),
             },
             Screen::Work { project_id } => work_stub(project_id, cx),
+            Screen::Settings { .. } => match self.settings.as_ref() {
+                Some(state) => settings::view(state, cx),
+                None => div().into_any_element(),
+            },
             other => div().child(other.placeholder()).into_any_element(),
         }
     }
@@ -146,8 +147,8 @@ impl Render for AppView {
                     Button::new("settings")
                         .ghost()
                         .label("设置")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.open_settings();
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_settings(window, cx);
                             cx.notify();
                         })),
                 ),

@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{anyhow, Result};
 
-use crate::domain::{Endpoint, Field, HeaderKv, Project, RequestLog, Scene, SceneKind};
+use crate::domain::{
+    Endpoint, Field, GlobalSettings, HeaderKv, Project, RequestLog, Scene, SceneKind,
+};
 use crate::import::{attach_scenes, import_prompt, validate_import, ImportDraft};
 use crate::llm::ModelClient;
 use crate::runtime::RuntimeHub;
@@ -13,7 +15,7 @@ use crate::store::{self, Store};
 pub struct AppService {
     store: Arc<Mutex<Store>>,
     runtime: RuntimeHub,
-    model: Box<dyn ModelClient + Send + Sync>,
+    model: Mutex<Box<dyn ModelClient + Send + Sync>>,
     // import_paste and commit_import are separate UI steps; keep the paste so source_text is the original.
     last_paste: Mutex<HashMap<String, String>>,
 }
@@ -24,9 +26,22 @@ impl AppService {
         Self {
             store,
             runtime,
-            model: Box::new(model),
+            model: Mutex::new(Box::new(model)),
             last_paste: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn load_settings(&self) -> Result<GlobalSettings> {
+        lock(&self.store)?.load_settings()
+    }
+
+    pub fn save_settings(&self, settings: &GlobalSettings) -> Result<()> {
+        lock(&self.store)?.save_settings(settings)
+    }
+
+    pub fn set_model(&self, model: impl ModelClient + Send + Sync + 'static) -> Result<()> {
+        *lock(&self.model)? = Box::new(model);
+        Ok(())
     }
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {
@@ -118,7 +133,7 @@ impl AppService {
             (project.success_code, project.fail_code)
         };
         let prompt = import_prompt(paste, &success_code, &fail_code);
-        let raw = self.model.complete_json(&prompt)?;
+        let raw = lock(&self.model)?.complete_json(&prompt)?;
         let drafts = validate_import(&raw)?;
         lock(&self.last_paste)?.insert(project_id.to_string(), paste.to_string());
         Ok(drafts)
