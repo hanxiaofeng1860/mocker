@@ -3,6 +3,7 @@ pub mod import;
 pub mod llm;
 pub mod runtime;
 pub mod scenes;
+pub mod service;
 pub mod sources;
 pub mod store;
 
