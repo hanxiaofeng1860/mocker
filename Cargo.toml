@@ -1,0 +1,9 @@
+[package]
+name = "mocker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gpui-component = "0.5.1"
+gpui = "0.2"
+anyhow = "1"
