@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    v_flex, ActiveTheme as _, TitleBar,
+    v_flex, ActiveTheme as _, Root, Sizable as _, TitleBar,
 };
 
 use crate::llm::{LlmError, ModelClient};
@@ -15,6 +15,7 @@ use super::home;
 use super::import_view::{self, ImportState};
 use super::new_project::{self, NewProjectForm};
 use super::settings::{self, SettingsState};
+use super::style;
 use super::workbench::{self, WorkbenchState};
 
 #[derive(Clone, Debug)]
@@ -141,6 +142,17 @@ impl AppView {
     }
 }
 
+fn screen_anim_id(screen: &Screen) -> SharedString {
+    match screen {
+        Screen::Empty => "screen-empty".into(),
+        Screen::Home => "screen-home".into(),
+        Screen::NewProject => "screen-new-project".into(),
+        Screen::Work { project_id } => format!("screen-work-{project_id}").into(),
+        Screen::Import { project_id } => format!("screen-import-{project_id}").into(),
+        Screen::Settings { .. } => "screen-settings".into(),
+    }
+}
+
 fn mocker_db_path() -> Result<std::path::PathBuf> {
     // Spec: ~/Library/Application Support/Mocker/mocker.db
     let dirs = directories::ProjectDirs::from("", "", "Mocker")
@@ -150,29 +162,44 @@ fn mocker_db_path() -> Result<std::path::PathBuf> {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
+        let anim_id = screen_anim_id(&self.screen);
+        // Root itself does not paint Dialog/Sheet/Notification; the app view
+        // must attach those layers or open_dialog is a no-op on screen.
+        div()
+            .relative()
             .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
             .child(
-                TitleBar::new().child("Mocker").child(
-                    Button::new("settings")
-                        .ghost()
-                        .label("设置")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_settings(window, cx);
-                            cx.notify();
-                        })),
-                ),
+                v_flex()
+                    .size_full()
+                    .font_family(cx.theme().font_family.clone())
+                    .bg(cx.theme().background)
+                    .text_color(cx.theme().foreground)
+                    .child(
+                        TitleBar::new().child("Mocker").child(
+                            Button::new("settings")
+                                .ghost()
+                                .small()
+                                .label("设置")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_settings(window, cx);
+                                    cx.notify();
+                                })),
+                        ),
+                    )
+                    .child(
+                        // Do not put buttons in overflow_y_scroll: GPUI scroll views
+                        // steal mouse hits, so 新建项目 looked dead.
+                        v_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .px_6()
+                            .py_5()
+                            .child(style::fade_in(anim_id, self.render_body(window, cx))),
+                    ),
             )
-            .child(
-                div()
-                    .id("body")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .p_5()
-                    .child(self.render_body(window, cx)),
-            )
+            .children(Root::render_dialog_layer(window, cx))
+            .children(Root::render_sheet_layer(window, cx))
+            .children(Root::render_notification_layer(window, cx))
     }
 }

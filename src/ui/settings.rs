@@ -18,12 +18,14 @@ use crate::service::AppService;
 use crate::sources::{home_dir, scan_sources, ModelSource, Protocol};
 
 use super::app::AppView;
+use super::style;
 use super::theme::{apply_ink_theme, apply_paper_theme};
 
 pub(super) struct SettingsState {
     sources: Vec<ModelSource>,
     selected_source_id: String,
     show_manual: bool,
+    manual_anim: u64,
     testing: bool,
     manual_protocol: String,
     manual_base_url: Entity<InputState>,
@@ -65,6 +67,7 @@ impl SettingsState {
             sources: scan_sources(&home_dir()),
             selected_source_id: stored.selected_source_id,
             show_manual,
+            manual_anim: 0,
             testing: false,
             manual_protocol: protocol,
             manual_base_url: manual_base_url.clone(),
@@ -166,15 +169,6 @@ fn source_subtitle(source: &ModelSource) -> String {
     }
 }
 
-fn section_label(text: &'static str, cx: &mut Context<AppView>) -> impl IntoElement {
-    div()
-        .mt_4()
-        .mb_1()
-        .text_xs()
-        .text_color(cx.theme().muted_foreground)
-        .child(text)
-}
-
 pub(super) fn view(state: &SettingsState, cx: &mut Context<AppView>) -> AnyElement {
     let selected = state.selected_source_id.clone();
     let protocol_ix = if state.manual_protocol == "anthropic-messages" {
@@ -191,16 +185,17 @@ pub(super) fn view(state: &SettingsState, cx: &mut Context<AppView>) -> AnyEleme
         .collect();
 
     v_flex()
-        .w_full()
-        .max_w(px(720.))
+        .size_full()
         .gap_2()
         .child(
             h_flex()
+                .flex_shrink_0()
                 .gap_3()
                 .child(
                     Button::new("back-settings")
                         .ghost()
-                        .label("← 项目")
+                        .small()
+                        .label("← 返回")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.close_settings(window, cx);
                             cx.notify();
@@ -209,127 +204,140 @@ pub(super) fn view(state: &SettingsState, cx: &mut Context<AppView>) -> AnyEleme
                 .child(div().text_xl().font_semibold().child("设置")),
         )
         .child(
-            div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child("低频配置放这里。所有项目共用一套模型来源。"),
-        )
-        .child(section_label("模型来源", cx))
-        .map(|this| {
-            if rows.is_empty() {
-                this.child(
+            v_flex()
+                .id("settings-body")
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .max_w(px(720.))
+                .overflow_y_scroll()
+                .gap_2()
+                .child(
                     div()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child("未扫描到来源。可手动填写兼容接口。"),
+                        .child("低频配置放这里。所有项目共用一套模型来源。"),
                 )
-            } else {
-                this.children(rows)
-            }
-        })
-        .child(
-            h_flex()
-                .gap_2()
-                .mt_2()
-                .mb_2()
+                .child(style::section_label("模型来源", cx))
+                .map(|this| {
+                    if rows.is_empty() {
+                        this.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("未扫描到来源。可手动填写兼容接口。"),
+                        )
+                    } else {
+                        this.children(rows)
+                    }
+                })
                 .child(
-                    Button::new("refresh-scan")
-                        .label("刷新扫描")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.refresh_scan(window, cx);
-                            cx.notify();
-                        })),
+                    h_flex()
+                        .gap_2()
+                        .mt_2()
+                        .mb_2()
+                        .child(
+                            Button::new("refresh-scan")
+                                .small()
+                                .label("刷新扫描")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.refresh_scan(window, cx);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("test-source")
+                                .small()
+                                .label("测试连通")
+                                .loading(state.testing)
+                                .disabled(state.testing)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.test_connectivity(window, cx);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("manual-source")
+                                .small()
+                                .label("手动填写接口")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.show_manual(window, cx);
+                                    cx.notify();
+                                })),
+                        ),
                 )
-                .child(
-                    Button::new("test-source")
-                        .label("测试连通")
-                        .loading(state.testing)
-                        .disabled(state.testing)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.test_connectivity(window, cx);
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("manual-source")
-                        .label("手动填写接口")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.show_manual(window, cx);
-                            cx.notify();
-                        })),
-                ),
-        )
-        .when(state.show_manual, |this| {
-            this.child(
-                v_flex()
-                    .w_full()
-                    .gap_3()
-                    .p_4()
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().popover)
-                    .shadow_sm()
-                    .child(
-                        v_form()
-                            .columns(2)
+                .when(state.show_manual, |this| {
+                    this.child(style::appear(
+                        format!("manual-form-{}", state.manual_anim),
+                        style::card(cx)
+                            .w_full()
+                            .gap_3()
+                            .p_5()
                             .child(
-                                field()
-                                    .label("Base URL")
-                                    .col_span(2)
-                                    .child(Input::new(&state.manual_base_url).w_full()),
-                            )
-                            .child(
-                                field()
-                                    .label("API Key")
-                                    .col_span(2)
-                                    .child(Input::new(&state.manual_api_key).w_full()),
-                            )
-                            .child(
-                                field().label("协议").col_span(2).child(
-                                    RadioGroup::horizontal("manual-protocol")
-                                        .selected_index(Some(protocol_ix))
-                                        .child(
-                                            Radio::new("proto-anthropic")
-                                                .label("anthropic-messages"),
-                                        )
-                                        .child(Radio::new("proto-openai").label("openai-chat"))
-                                        .on_click(cx.listener(|this, ix, window, cx| {
-                                            this.set_manual_protocol(*ix, window, cx);
-                                            cx.notify();
-                                        })),
-                                ),
-                            )
-                            .child(
-                                field()
-                                    .label("模型")
-                                    .col_span(2)
-                                    .child(Input::new(&state.manual_model).w_full()),
+                                v_form()
+                                    .columns(2)
+                                    .child(
+                                        field()
+                                            .label("Base URL")
+                                            .col_span(2)
+                                            .child(Input::new(&state.manual_base_url).w_full()),
+                                    )
+                                    .child(
+                                        field()
+                                            .label("API Key")
+                                            .col_span(2)
+                                            .child(Input::new(&state.manual_api_key).w_full()),
+                                    )
+                                    .child(
+                                        field().label("协议").col_span(2).child(
+                                            RadioGroup::horizontal("manual-protocol")
+                                                .selected_index(Some(protocol_ix))
+                                                .child(
+                                                    Radio::new("proto-anthropic")
+                                                        .label("anthropic-messages"),
+                                                )
+                                                .child(
+                                                    Radio::new("proto-openai").label("openai-chat"),
+                                                )
+                                                .on_click(cx.listener(|this, ix, window, cx| {
+                                                    this.set_manual_protocol(*ix, window, cx);
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                    )
+                                    .child(
+                                        field()
+                                            .label("模型")
+                                            .col_span(2)
+                                            .child(Input::new(&state.manual_model).w_full()),
+                                    ),
                             ),
-                    ),
-            )
-        })
-        .child(section_label("外观", cx))
-        .child(
-            h_flex()
-                .gap_2()
+                    ))
+                })
+                .child(style::section_label("外观", cx))
                 .child(
-                    Button::new("theme-paper")
-                        .label("Paper")
-                        .selected(!is_dark)
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            apply_paper_theme(cx);
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("theme-ink")
-                        .label("Ink")
-                        .selected(is_dark)
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            apply_ink_theme(cx);
-                            cx.notify();
-                        })),
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("theme-paper")
+                                .small()
+                                .label("Paper")
+                                .selected(!is_dark)
+                                .on_click(cx.listener(|_, _, _, cx| {
+                                    apply_paper_theme(cx);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("theme-ink")
+                                .small()
+                                .label("Ink")
+                                .selected(is_dark)
+                                .on_click(cx.listener(|_, _, _, cx| {
+                                    apply_ink_theme(cx);
+                                    cx.notify();
+                                })),
+                        ),
                 ),
         )
         .into_any_element()
@@ -354,11 +362,11 @@ fn source_row(source: &ModelSource, selected: &str, cx: &mut Context<AppView>) -
         .items_center()
         .p_3()
         .mb_1()
-        .rounded(px(6.))
+        .rounded(cx.theme().radius_lg)
         .border_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().popover)
-        .shadow_sm()
+        .shadow(style::paper_shadow(cx))
         .when(!available, |this| this.opacity(0.55))
         .child(
             Radio::new(SharedString::from(format!("src-{id}")))
@@ -443,6 +451,9 @@ impl AppView {
     fn show_manual(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(state) = self.settings.as_mut() {
             state.selected_source_id = "manual".into();
+            if !state.show_manual {
+                state.manual_anim = state.manual_anim.saturating_add(1);
+            }
             state.show_manual = true;
         }
         self.persist_selection(window, cx);

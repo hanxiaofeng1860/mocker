@@ -265,6 +265,25 @@ fn create_endpoint_writes_four_scenes_and_unique_paths() {
 }
 
 #[test]
+fn delete_endpoint_removes_it_and_scenes() {
+    let (_dir, store, svc) = new_service(Noop);
+    let project = svc
+        .create_project("phone", 19011, "0000", "9999", Vec::new())
+        .unwrap();
+    let a = svc.create_endpoint(&project.id).unwrap();
+    let b = svc.create_endpoint(&project.id).unwrap();
+    svc.delete_endpoint(&a.id).unwrap();
+    assert!(store.lock().unwrap().get_endpoint(&a.id).unwrap().is_none());
+    assert!(store
+        .lock()
+        .unwrap()
+        .get_scene(&a.id, SceneKind::Success)
+        .unwrap()
+        .is_none());
+    assert!(store.lock().unwrap().get_endpoint(&b.id).unwrap().is_some());
+}
+
+#[test]
 fn regenerate_scene_from_fields_builds_success_data() {
     let (_dir, _, svc) = new_service(Noop);
     let project = svc

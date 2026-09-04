@@ -3572,6 +3572,7 @@ dependencies = [
  "arc-swap",
  "axum",
  "chrono",
+ "cocoa 0.26.0",
  "directories",
  "gpui",
  "gpui-component",

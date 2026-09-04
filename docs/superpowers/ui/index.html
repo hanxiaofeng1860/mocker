@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="theme-paper">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mocker · 方案 C</title>
+  <style>
+    :root {
+      --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable",
+        "Segoe UI", "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+      --radius: 0.3rem;
+    }
+    .theme-paper {
+      --background: oklch(0.935 0.020 80);
+      --foreground: oklch(0.265 0.020 50);
+      --card: oklch(0.965 0.014 80);
+      --popover: oklch(0.970 0.012 80);
+      --primary: oklch(0.43 0.06 145);
+      --primary-foreground: oklch(0.96 0.014 80);
+      --secondary: oklch(0.89 0.018 75);
+      --muted: oklch(0.90 0.016 75);
+      --muted-foreground: oklch(0.48 0.022 55);
+      --accent: oklch(0.55 0.13 28);
+      --tag-sage: oklch(0.42 0.07 145);
+      --tag-sage-wash: oklch(0.90 0.04 145);
+      --tag-ocean: oklch(0.45 0.08 235);
+      --tag-ocean-wash: oklch(0.91 0.03 235);
+      --tag-coral-wash: oklch(0.92 0.04 20);
+      --destructive: oklch(0.52 0.16 25);
+      --border: oklch(0.82 0.018 70);
+      --input: oklch(0.85 0.014 72);
+      --ring: oklch(0.43 0.06 145);
+      --shadow-paper:
+        0 1px 0 rgba(255, 250, 235, 0.6) inset,
+        0 1px 2px rgba(70, 45, 20, 0.10),
+        0 2px 6px rgba(70, 45, 20, 0.06);
+      --shadow-paper-lifted:
+        0 1px 0 rgba(255, 250, 235, 0.6) inset,
+        0 4px 10px rgba(70, 45, 20, 0.14),
+        0 8px 24px rgba(70, 45, 20, 0.08);
+    }
+    .theme-ink {
+      --background: oklch(0.20 0.002 80);
+      --foreground: oklch(0.87 0.003 80);
+      --card: oklch(0.23 0.002 80);
+      --popover: oklch(0.25 0.002 80);
+      --primary: oklch(0.64 0.07 145);
+      --primary-foreground: oklch(0.20 0.002 80);
+      --secondary: oklch(0.26 0.002 80);
+      --muted: oklch(0.24 0.002 80);
+      --muted-foreground: oklch(0.60 0.003 80);
+      --accent: oklch(0.62 0.12 28);
+      --tag-sage: oklch(0.72 0.09 145);
+      --tag-sage-wash: oklch(0.28 0.04 145);
+      --tag-ocean: oklch(0.72 0.08 235);
+      --tag-ocean-wash: oklch(0.28 0.04 235);
+      --tag-coral-wash: oklch(0.29 0.05 20);
+      --destructive: oklch(0.58 0.16 25);
+      --border: oklch(0.34 0.002 80);
+      --input: oklch(0.30 0.002 80);
+      --ring: oklch(0.64 0.07 145);
+      --shadow-paper:
+        0 1px 0 rgba(255,255,255,.02) inset,
+        0 1px 2px rgba(0,0,0,.40),
+        0 2px 6px rgba(0,0,0,.25);
+      --shadow-paper-lifted:
+        0 1px 0 rgba(255,255,255,.02) inset,
+        0 4px 10px rgba(0,0,0,.50),
+        0 8px 24px rgba(0,0,0,.30);
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      height: auto;
+      overflow-x: hidden;
+      overflow-y: auto;
+    }
+    body {
+      font-family: var(--font-sans);
+      background: var(--background);
+      color: var(--foreground);
+      font-size: 13px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+    .theme-paper.paper-atmosphere::before {
+      content: "";
+      position: fixed; inset: 0; pointer-events: none; z-index: 99; opacity: .07;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.20 0 0 0 0 0.16 0 0 0 0 0.10 0 0 0 0.95 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+      background-size: 200px 200px; mix-blend-mode: multiply;
+    }
+    .theme-paper.paper-atmosphere::after {
+      content: "";
+      position: fixed; inset: 0; pointer-events: none; z-index: 99;
+      background: radial-gradient(ellipse at center, transparent 35%, rgba(70,45,20,.12) 100%);
+      mix-blend-mode: multiply;
+    }
+    .page { position: relative; z-index: 1; max-width: 1240px; margin: 0 auto; padding: 24px 20px 80px; }
+    h1 { margin: 0 0 6px; font-size: 26px; font-weight: 600; letter-spacing: -.012em; }
+    .lead { margin: 0 0 16px; color: var(--muted-foreground); max-width: 720px; }
+    .screens { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+    .chip {
+      font: inherit; font-size: 12px; padding: 4px 10px; border-radius: var(--radius);
+      border: 1px solid var(--border); background: var(--card); color: var(--foreground); cursor: pointer;
+    }
+    .chip:hover { box-shadow: var(--shadow-paper); }
+    .chip.on { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+    .win {
+      background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+      box-shadow: var(--shadow-paper-lifted); overflow: hidden;
+    }
+    .bar {
+      display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .dots { display: flex; gap: 6px; }
+    .dots i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+    .r { background: #c45c4a; } .y { background: #c4a35a; } .g { background: #3A5A40; }
+    .brand { font-weight: 600; }
+    .grow { flex: 1; }
+    .btn {
+      font: inherit; font-size: 12px; padding: 5px 12px; border-radius: var(--radius);
+      border: 1px solid var(--border); background: var(--card); color: var(--foreground); cursor: pointer;
+    }
+    .btn:hover { box-shadow: var(--shadow-paper); }
+    .btn-primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+    .btn-ghost { background: transparent; }
+    .btn-link { border: 0; background: transparent; color: var(--muted-foreground); padding: 5px 6px; }
+    .btn-link:hover { color: var(--foreground); }
+    .btn-danger { color: var(--destructive); }
+    input, select, textarea {
+      font: inherit; color: var(--foreground); background: var(--popover);
+      border: 1px solid var(--input); border-radius: var(--radius); padding: 6px 8px;
+    }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--ring); }
+    .mono { font-family: var(--font-mono); }
+    .muted { color: var(--muted-foreground); }
+    .hidden { display: none !important; }
+    .badge { font-family: var(--font-mono); font-size: 10px; padding: 1px 6px; border-radius: var(--radius); }
+    .post { background: var(--tag-ocean-wash); color: var(--tag-ocean); }
+    .run { background: var(--tag-sage-wash); color: var(--tag-sage); }
+    .stop { background: var(--muted); color: var(--muted-foreground); }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    th { color: var(--muted-foreground); font-weight: 500; }
+    td input, td select { width: 100%; padding: 4px 6px; }
+    .screen { display: none; }
+    .screen.on { display: block; }
+
+    .home { padding: 22px 24px 28px; }
+    .home-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+    .home-head h2 { margin: 0; font-size: 20px; letter-spacing: -.012em; }
+    .section-label {
+      font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+      color: var(--muted-foreground); margin: 18px 0 8px;
+    }
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .pcard {
+      text-align: left; background: var(--popover); border: 1px solid var(--border);
+      border-radius: 8px; box-shadow: var(--shadow-paper); padding: 16px; cursor: pointer; color: inherit;
+    }
+    .pcard:hover { box-shadow: var(--shadow-paper-lifted); transform: translateY(-1px); }
+    .pcard h3 { margin: 0 0 6px; font-size: 16px; }
+    .pcard .meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted-foreground); }
+    .empty-home { padding: 56px 24px; text-align: center; }
+    .empty-home h2 { margin: 0 0 8px; font-size: 22px; }
+    .form-sheet {
+      margin-top: 8px; background: var(--popover); border: 1px solid var(--border);
+      border-radius: 8px; box-shadow: var(--shadow-paper); padding: 16px;
+    }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field.span2 { grid-column: 1 / -1; }
+    .field label { font-size: 11px; color: var(--muted-foreground); }
+
+    .work { display: grid; grid-template-columns: 240px 1fr; min-height: 560px; }
+    .side { border-right: 1px solid var(--border); background: var(--background); display: flex; flex-direction: column; }
+    .side-tools { display: flex; gap: 6px; padding: 10px; }
+    .side-tools input { flex: 1; }
+    .api {
+      display: flex; gap: 8px; padding: 8px 12px; cursor: pointer; border-left: 2px solid transparent; text-align: left;
+    }
+    .api:hover { background: var(--muted); }
+    .api.on { background: var(--card); box-shadow: var(--shadow-paper); border-left-color: var(--primary); }
+    .api small { display: block; color: var(--muted-foreground); font-size: 11px; }
+    .editor { padding: 16px 18px 8px; }
+    .live {
+      display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+      background: var(--tag-sage-wash); color: var(--tag-sage);
+      border-radius: 999px; padding: 2px 8px;
+    }
+    .live b { width: 6px; height: 6px; border-radius: 50%; background: var(--primary); display: block; }
+    .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+    .row input.path { flex: 1; font-family: var(--font-mono); }
+    .block { margin: 14px 0; }
+    .block h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted-foreground); letter-spacing: .04em; }
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .sheet { background: var(--popover); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-paper); }
+    .sheet h3 { margin: 0; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    textarea.json {
+      width: 100%; min-height: 220px; font-family: var(--font-mono); font-size: 12px;
+      border: 0; background: transparent; resize: vertical; padding: 10px;
+    }
+    .log { border-top: 1px solid var(--border); background: var(--background); }
+    .log-h { display: flex; justify-content: space-between; padding: 6px 12px; font-size: 11px; color: var(--muted-foreground); }
+
+    .settings { padding: 20px 24px 28px; max-width: 720px; }
+    .settings h2 { margin: 0 0 4px; font-size: 20px; }
+    .src {
+      display: grid; grid-template-columns: 18px 1fr auto; gap: 10px; align-items: center;
+      padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+      background: var(--popover); margin-bottom: 8px; box-shadow: var(--shadow-paper);
+    }
+    .src.off { opacity: .55; }
+    .import { padding: 18px 20px 24px; }
+    .import textarea { width: 100%; min-height: 140px; }
+    .note { margin-top: 14px; color: var(--muted-foreground); font-size: 12px; }
+  </style>
+</head>
+<body class="paper-atmosphere">
+  <div class="page">
+    <h1>方案 C · 项目台</h1>
+    <p class="lead">C 为主：先项目，再进工作台。模型来源进设置。接口字段、路径、JSON 均可改，保存后下一请求立刻生效。下面切屏看结构，整页可滚动。</p>
+    <div class="screens" id="screens">
+      <button class="chip" data-s="empty">无项目</button>
+      <button class="chip on" data-s="home">项目首页</button>
+      <button class="chip" data-s="new">新建项目</button>
+      <button class="chip" data-s="work">工作台 · 编辑</button>
+      <button class="chip" data-s="import">导入</button>
+      <button class="chip" data-s="settings">设置</button>
+    </div>
+
+    <div class="win">
+      <div class="bar">
+        <div class="dots"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+        <span class="brand">Mocker</span>
+        <span class="grow"></span>
+        <button class="btn" data-go="settings">设置</button>
+      </div>
+
+      <!-- empty -->
+      <div class="screen empty-home" id="s-empty">
+        <h2>还没有项目</h2>
+        <p class="muted">一个前端对应一个项目、一个端口。先建项目，再导入或手工加接口。</p>
+        <button class="btn btn-primary" data-go="new">新建项目</button>
+      </div>
+
+      <!-- home -->
+      <div class="screen on home" id="s-home">
+        <div class="home-head">
+          <h2>项目</h2>
+          <span class="muted">2 个 · 1 个运行中</span>
+          <span class="grow"></span>
+          <button class="btn btn-primary" data-go="new">新建项目</button>
+        </div>
+        <div class="section-label">运行中</div>
+        <div class="cards">
+          <button class="pcard" data-go="work">
+            <h3>智能话机</h3>
+            <div class="meta">
+              <span class="badge run">运行中</span>
+              <span class="mono">:7788</span>
+              <span>7 个接口</span>
+              <span>成功码 0000</span>
+            </div>
+          </button>
+        </div>
+        <div class="section-label">全部项目</div>
+        <div class="cards">
+          <button class="pcard" data-go="work">
+            <h3>智能话机</h3>
+            <div class="meta"><span class="badge run">运行中</span><span class="mono">:7788</span><span>7 个接口</span></div>
+          </button>
+          <button class="pcard" data-go="work">
+            <h3>管理后台</h3>
+            <div class="meta"><span class="badge stop">已停止</span><span class="mono">:7789</span><span>12 个接口</span></div>
+          </button>
+        </div>
+      </div>
+
+      <!-- new project -->
+      <div class="screen home" id="s-new">
+        <div class="home-head">
+          <button class="btn-link" data-go="home">← 项目</button>
+          <h2>新建项目</h2>
+        </div>
+        <div class="form-sheet">
+          <div class="form-grid">
+            <div class="field span2">
+              <label>项目名称</label>
+              <input value="" placeholder="例如：智能话机" />
+            </div>
+            <div class="field">
+              <label>端口</label>
+              <input class="mono" placeholder="7788" />
+            </div>
+            <div class="field">
+              <label>成功码</label>
+              <input class="mono" value="0000" />
+            </div>
+            <div class="field">
+              <label>失败码</label>
+              <input class="mono" value="9999" />
+            </div>
+            <div class="field span2">
+              <label>默认请求头（可选，如 sn）</label>
+              <input placeholder="sn" />
+            </div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:8px">
+            <button class="btn btn-primary" data-go="work">创建并打开</button>
+            <button class="btn" data-go="home">取消</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- work / editor -->
+      <div class="screen" id="s-work">
+        <div class="bar" style="border-bottom:1px solid var(--border)">
+          <button class="btn-link" data-go="home">← 项目</button>
+          <strong>智能话机</strong>
+          <span class="badge run">运行中</span>
+          <span class="mono muted">:7788</span>
+          <button class="btn">停止</button>
+          <span class="grow"></span>
+          <span class="live"><b></b> 已写入 · 下一请求生效</span>
+          <button class="btn" data-go="import">导入</button>
+          <button class="btn">项目设置</button>
+        </div>
+        <div class="work">
+          <aside class="side">
+            <div class="side-tools">
+              <input placeholder="搜索接口" />
+              <button class="btn btn-primary" title="手工新建">+</button>
+            </div>
+            <div>
+              <div class="api on">
+                <span class="badge post">POST</span>
+                <div>首页数据概览<small class="mono">queryPhoneHomeData</small></div>
+              </div>
+              <div class="api">
+                <span class="badge post">POST</span>
+                <div>数据概览详情<small class="mono">queryPhoneDataOverview</small></div>
+              </div>
+              <div class="api">
+                <span class="badge post">POST</span>
+                <div>修改话机基础信息<small class="mono">modifyPhoneBasicInfo</small></div>
+              </div>
+              <div class="api">
+                <span class="badge post">POST</span>
+                <div>通话记录列表<small class="mono">queryCallRecordList</small></div>
+              </div>
+            </div>
+            <div style="padding:10px"><button class="btn" style="width:100%">+ 手工新建接口</button></div>
+          </aside>
+          <div>
+            <div class="editor">
+              <div class="row" style="justify-content:space-between">
+                <div class="field" style="flex:1">
+                  <label class="muted" style="font-size:11px">接口名称</label>
+                  <input value="首页数据概览" />
+                </div>
+                <label class="muted" style="display:flex;align-items:center;gap:6px;margin-top:18px">
+                  <input type="checkbox" checked /> 启用
+                </label>
+              </div>
+              <div class="row">
+                <select>
+                  <option>POST</option><option>GET</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
+                </select>
+                <input class="path" value="/hl/pub/phone/v1/queryPhoneHomeData" />
+              </div>
+              <div class="block">
+                <h3>当前场景 · 点选即切换运行时</h3>
+                <div class="screens" id="scenes">
+                  <button class="chip on" data-scene="success">成功</button>
+                  <button class="chip" data-scene="empty">空数据</button>
+                  <button class="chip" data-scene="param_error">参数错误</button>
+                  <button class="chip" data-scene="business_error">业务失败</button>
+                </div>
+              </div>
+              <div class="block">
+                <h3>入参 · Header</h3>
+                <div class="sheet">
+                  <table>
+                    <thead><tr><th>英文名</th><th>中文名</th><th>类型</th><th>必填</th><th>说明</th><th></th></tr></thead>
+                    <tbody>
+                      <tr>
+                        <td><input class="mono" value="sn"></td>
+                        <td><input value="设备 sn"></td>
+                        <td>
+                          <select><option>String</option><option>Integer</option></select>
+                        </td>
+                        <td><input type="checkbox" checked></td>
+                        <td><input value="header"></td>
+                        <td><button class="btn-link btn-danger">删</button></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div style="padding:8px"><button class="btn">+ 添加 header</button></div>
+                </div>
+              </div>
+              <div class="block">
+                <h3>入参 · Body</h3>
+                <div class="sheet">
+                  <div class="muted" style="padding:12px">暂无字段 <button class="btn" style="margin-left:8px">+ 添加 body 字段</button></div>
+                </div>
+              </div>
+              <div class="split">
+                <div>
+                  <div class="block" style="margin-top:0">
+                    <h3>响应字段</h3>
+                    <div class="sheet">
+                      <table>
+                        <thead><tr><th>路径</th><th>英文名</th><th>类型</th><th></th></tr></thead>
+                        <tbody>
+                          <tr><td class="mono muted">data</td><td><input class="mono" value="todayInbound"></td><td><select><option>Integer</option></select></td><td><button class="btn-link btn-danger">删</button></td></tr>
+                          <tr><td class="mono muted">data</td><td><input class="mono" value="yesterdayInbound"></td><td><select><option>Integer</option></select></td><td><button class="btn-link btn-danger">删</button></td></tr>
+                          <tr><td class="mono muted">data</td><td><input class="mono" value="recent7DayInbound"></td><td><select><option>Integer</option></select></td><td><button class="btn-link btn-danger">删</button></td></tr>
+                        </tbody>
+                      </table>
+                      <div style="padding:8px;display:flex;gap:8px">
+                        <button class="btn">+ 添加字段</button>
+                        <button class="btn">按字段重新生成</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <div class="block" style="margin-top:0">
+                    <h3>场景 JSON · 改完即写入快照</h3>
+                    <div class="sheet">
+                      <textarea class="json" id="json-box">{
+  "code": "0000",
+  "msg": "成功",
+  "data": {
+    "todayInbound": 12,
+    "yesterdayInbound": 9,
+    "recent7DayInbound": 47
+  }
+}</textarea>
+                      <div style="padding:8px;display:flex;gap:8px;align-items:center">
+                        <button class="btn">用 AI 重新生成成功数据</button>
+                        <span class="live" id="live-hint"><b></b> 已写入 · 无需重启</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="log">
+              <div class="log-h"><span>请求日志</span><span>清空</span></div>
+              <table>
+                <thead><tr><th>时间</th><th>方法</th><th>路径</th><th>状态</th><th>场景</th></tr></thead>
+                <tbody>
+                  <tr><td>16:41:02</td><td>POST</td><td class="mono">/hl/pub/phone/v1/queryPhoneHomeData</td><td>200</td><td>成功</td></tr>
+                  <tr><td>16:40:47</td><td>POST</td><td class="mono">/hl/pub/phone/v1/queryCallRecordList</td><td>200</td><td>空数据</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- import -->
+      <div class="screen import" id="s-import">
+        <div class="home-head">
+          <button class="btn-link" data-go="work">← 工作台</button>
+          <h2>导入接口</h2>
+        </div>
+        <textarea placeholder="粘贴公司设计文档风格的接口说明"></textarea>
+        <p class="muted">将使用设置里的模型来源（当前 Claude Code）。</p>
+        <div style="display:flex;gap:8px;margin:10px 0">
+          <button class="btn btn-primary">解析</button>
+          <button class="btn" data-go="work">取消</button>
+        </div>
+        <div class="sheet">
+          <table>
+            <thead><tr><th></th><th>方法</th><th>路径</th><th>名称</th></tr></thead>
+            <tbody>
+              <tr><td><input type="checkbox" checked></td><td>POST</td><td class="mono">/hl/pub/phone/v1/queryPhoneHomeData</td><td>首页数据概览</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- settings -->
+      <div class="screen settings" id="s-settings">
+        <div class="home-head">
+          <button class="btn-link" data-go="home">← 项目</button>
+          <h2>设置</h2>
+        </div>
+        <p class="muted" style="margin-top:0">低频配置放这里。所有项目共用一套模型来源。</p>
+        <div class="section-label">模型来源</div>
+        <label class="src">
+          <input type="radio" name="src" checked>
+          <div><strong>Claude Code</strong><div class="mono muted">anthropic · claude-haiku-xsy</div></div>
+          <span class="badge run">可用</span>
+        </label>
+        <label class="src">
+          <input type="radio" name="src">
+          <div><strong>Pi · xsy-llm</strong><div class="mono muted">anthropic</div></div>
+          <span class="badge run">可用</span>
+        </label>
+        <label class="src">
+          <input type="radio" name="src">
+          <div><strong>Codex 本地反代</strong><div class="mono muted">127.0.0.1:15721</div></div>
+          <span class="badge run">可用</span>
+        </label>
+        <label class="src off">
+          <input type="radio" name="src" disabled>
+          <div><strong>Cursor</strong><div class="muted">OAuth 登录态，第一版不可用</div></div>
+          <span class="badge stop">不可用</span>
+        </label>
+        <div style="display:flex;gap:8px;margin:12px 0 20px">
+          <button class="btn">刷新扫描</button>
+          <button class="btn">测试连通</button>
+          <button class="btn">手动填写接口</button>
+        </div>
+        <div class="section-label">外观</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn" id="theme-paper">Paper</button>
+          <button class="btn" id="theme-ink">Ink</button>
+        </div>
+      </div>
+    </div>
+    <p class="note">项目首页右上是「新建项目」。设置只放模型来源和外观。工作台里名称、方法、路径、字段、JSON 都是输入框，改完快照立刻更新。</p>
+  </div>
+  <script>
+    const JSONS = {
+      success: `{\n  "code": "0000",\n  "msg": "成功",\n  "data": {\n    "todayInbound": 12,\n    "yesterdayInbound": 9,\n    "recent7DayInbound": 47\n  }\n}`,
+      empty: `{\n  "code": "0000",\n  "msg": "成功",\n  "data": {\n    "list": [],\n    "total": 0\n  }\n}`,
+      param_error: `{\n  "code": "9999",\n  "msg": "参数错误",\n  "data": null\n}`,
+      business_error: `{\n  "code": "9999",\n  "msg": "失败",\n  "data": null\n}`
+    };
+    function show(id) {
+      document.querySelectorAll(".screen").forEach(s => s.classList.toggle("on", s.id === "s-" + id));
+      document.querySelectorAll("#screens .chip").forEach(c => c.classList.toggle("on", c.dataset.s === id));
+    }
+    document.getElementById("screens").addEventListener("click", e => {
+      const b = e.target.closest("[data-s]"); if (b) show(b.dataset.s);
+    });
+    document.body.addEventListener("click", e => {
+      const go = e.target.closest("[data-go]"); if (go) show(go.dataset.go);
+    });
+    document.getElementById("scenes").addEventListener("click", e => {
+      const b = e.target.closest("[data-scene]"); if (!b) return;
+      document.querySelectorAll("#scenes .chip").forEach(c => c.classList.toggle("on", c === b));
+      document.getElementById("json-box").value = JSONS[b.dataset.scene];
+    });
+    document.getElementById("json-box").addEventListener("input", () => {
+      const h = document.getElementById("live-hint");
+      h.innerHTML = "<b></b> 已写入 · 下一请求生效";
+    });
+    document.getElementById("theme-paper").onclick = () => {
+      document.documentElement.className = "theme-paper";
+      document.body.classList.add("paper-atmosphere");
+    };
+    document.getElementById("theme-ink").onclick = () => {
+      document.documentElement.className = "theme-ink";
+      document.body.classList.remove("paper-atmosphere");
+    };
+  </script>
+</body>
+</html>

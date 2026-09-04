@@ -1,6 +1,6 @@
 # Task 9 implementation summary
 
-Empty, home, and new-project screens (scheme C). Commit: `2fabbcd` (`feat: project home and new-project form`).
+Empty, home, and new-project screens (scheme C). Commit: `256b745` (`feat: project home and new-project form`).
 
 ## Files changed
 

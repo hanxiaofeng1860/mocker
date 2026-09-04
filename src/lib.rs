@@ -7,6 +7,7 @@ pub mod service;
 pub mod sources;
 pub mod store;
 pub mod ui;
+pub mod window_geom;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

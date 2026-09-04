@@ -121,6 +121,19 @@ impl AppService {
         self.runtime.refresh(&project_id)
     }
 
+    pub fn delete_endpoint(&self, endpoint_id: &str) -> Result<()> {
+        let project_id = {
+            let store = lock(&self.store)?;
+            let endpoint = store
+                .get_endpoint(endpoint_id)?
+                .ok_or_else(|| anyhow!("endpoint not found: {endpoint_id}"))?;
+            let project_id = endpoint.project_id;
+            store.delete_endpoint(endpoint_id)?;
+            project_id
+        };
+        self.runtime.refresh(&project_id)
+    }
+
     pub fn create_endpoint(&self, project_id: &str) -> Result<Endpoint> {
         let (project, endpoints) = {
             let store = lock(&self.store)?;

@@ -1,5 +1,7 @@
-use mocker::domain::{FieldLoc, SceneKind};
-use mocker::import::{attach_scenes, run_import, validate_import, ImportError};
+use mocker::domain::{Field, FieldLoc, SceneKind};
+use mocker::import::{
+    attach_scenes, run_import, semantic_values_prompt, validate_import, ImportError,
+};
 use mocker::llm::{LlmError, ModelClient};
 use serde_json::{json, Value};
 
@@ -128,4 +130,33 @@ fn run_import_uses_complete_json_then_validate() {
     let drafts = run_import(&fake, "PASTE-FIXTURE", "0000", "9999").unwrap();
     assert_eq!(drafts.len(), 1);
     assert_eq!(drafts[0].path, "/hl/pub/phone/v1/queryPhoneHomeData");
+}
+
+#[test]
+fn semantic_values_prompt_asks_for_realistic_values_and_json_only() {
+    let prompt = semantic_values_prompt(
+        "0000",
+        "查询设备",
+        "POST",
+        "/hl/pub/phone/v1/queryPhoneBasicInfo",
+        &[Field {
+            id: "1".into(),
+            endpoint_id: "e".into(),
+            location: FieldLoc::Response,
+            name: "city".into(),
+            name_zh: "城市".into(),
+            type_name: "String".into(),
+            required: false,
+            comment: String::new(),
+            enum_values: Vec::new(),
+            parent_id: None,
+        }],
+        r#"{"code":"0000","msg":"成功","data":{"city":""}}"#,
+    );
+    assert!(prompt.contains("only return JSON object"));
+    assert!(prompt.contains("city"));
+    assert!(prompt.contains("城市"));
+    assert!(prompt.contains("国内城市名"));
+    assert!(prompt.contains("0000"));
+    assert!(!prompt.contains("endpoints"));
 }

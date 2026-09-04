@@ -20,6 +20,7 @@ use crate::sources::{home_dir, scan_sources};
 
 use super::app::AppView;
 use super::settings::client_for_selection;
+use super::style;
 
 pub(super) struct ImportState {
     pub(super) project_id: String,
@@ -59,15 +60,18 @@ pub(super) fn view(
 ) -> AnyElement {
     let parsing = state.parsing;
     let can_write = commit_enabled(&state.drafts, &state.selected, &state.existing);
+    let preview_id = state.ticket.load(Ordering::SeqCst);
     v_flex()
-        .w_full()
+        .size_full()
         .gap_3()
         .child(
             h_flex()
+                .flex_shrink_0()
                 .gap_3()
                 .child(
                     Button::new("back-import")
                         .ghost()
+                        .small()
                         .label("← 工作台")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.close_import();
@@ -76,19 +80,22 @@ pub(super) fn view(
                 )
                 .child(div().text_xl().font_semibold().child("导入接口")),
         )
-        .child(Input::new(&state.paste).h(px(160.)).w_full())
+        .child(Input::new(&state.paste).h(px(160.)).w_full().flex_shrink_0())
         .child(
             div()
+                .flex_shrink_0()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(source_caption(service)),
         )
         .child(
             h_flex()
+                .flex_shrink_0()
                 .gap_2()
                 .child(
                     Button::new("import-parse")
                         .primary()
+                        .small()
                         .label("解析")
                         .loading(parsing)
                         .disabled(parsing)
@@ -100,6 +107,7 @@ pub(super) fn view(
                 .when(parsing, |this| {
                     this.child(
                         Button::new("import-abort")
+                            .small()
                             .label("取消解析")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.abort_import_parse();
@@ -109,6 +117,8 @@ pub(super) fn view(
                 })
                 .child(
                     Button::new("import-cancel")
+                        .ghost()
+                        .small()
                         .label("取消")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.close_import();
@@ -119,6 +129,7 @@ pub(super) fn view(
                     this.child(
                         Button::new("import-write")
                             .primary()
+                            .small()
                             .label("写入")
                             .disabled(!can_write || parsing)
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -131,6 +142,7 @@ pub(super) fn view(
         .when(parsing, |this| {
             this.child(
                 div()
+                    .flex_shrink_0()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child("解析中…"),
@@ -138,29 +150,39 @@ pub(super) fn view(
         })
         .when_some(state.error.clone(), |this, err| {
             this.child(
-                div()
-                    .p_3()
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(cx.theme().danger)
-                    .text_color(cx.theme().danger)
-                    .child(err),
+                style::appear(
+                    "import-error",
+                    div()
+                        .w_full()
+                        .p_3()
+                        .rounded(cx.theme().radius)
+                        .border_1()
+                        .border_color(cx.theme().danger)
+                        .bg(cx.theme().danger.opacity(0.08))
+                        .text_color(cx.theme().danger)
+                        .child(err),
+                ),
             )
         })
         .when(!state.drafts.is_empty(), |this| {
-            this.child(preview_table(state, cx))
+            this.child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(style::appear(
+                        format!("import-preview-{preview_id}"),
+                        preview_table(state, cx),
+                    )),
+            )
         })
         .into_any_element()
 }
 
 fn preview_table(state: &ImportState, cx: &mut Context<AppView>) -> impl IntoElement {
-    v_flex()
+    style::card(cx)
         .w_full()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().popover)
-        .shadow_sm()
+        .flex_1()
+        .min_h_0()
         .child(
             h_flex()
                 .w_full()

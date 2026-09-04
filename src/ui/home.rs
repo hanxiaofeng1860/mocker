@@ -10,16 +10,18 @@ use crate::domain::Project;
 use crate::service::AppService;
 
 use super::app::AppView;
+use super::style;
 
 pub(super) fn empty(cx: &mut Context<AppView>) -> AnyElement {
     v_flex()
         .size_full()
         .items_center()
         .justify_center()
-        .gap_3()
+        .gap_4()
         .child(div().text_xl().font_semibold().child("还没有项目"))
         .child(
             div()
+                .max_w(px(420.))
                 .text_color(cx.theme().muted_foreground)
                 .child("一个前端对应一个项目、一个端口。先建项目，再导入或手工加接口。"),
         )
@@ -28,6 +30,7 @@ pub(super) fn empty(cx: &mut Context<AppView>) -> AnyElement {
                 .primary()
                 .label("新建项目")
                 .on_click(cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
                     this.go_new_project(window, cx);
                     cx.notify();
                 })),
@@ -57,11 +60,12 @@ pub(super) fn home(service: &AppService, cx: &mut Context<AppView>) -> AnyElemen
     let running_cards: Vec<ProjectCard> = cards.iter().filter(|c| c.running).cloned().collect();
 
     v_flex()
-        .w_full()
-        .gap_2()
+        .size_full()
+        .gap_3()
         .child(
             h_flex()
                 .w_full()
+                .flex_shrink_0()
                 .gap_3()
                 .child(div().text_xl().font_semibold().child("项目"))
                 .child(
@@ -74,17 +78,26 @@ pub(super) fn home(service: &AppService, cx: &mut Context<AppView>) -> AnyElemen
                 .child(
                     Button::new("home-new-project")
                         .primary()
+                        .small()
                         .label("新建项目")
                         .on_click(cx.listener(|this, _, window, cx| {
+                            cx.stop_propagation();
                             this.go_new_project(window, cx);
                             cx.notify();
                         })),
                 ),
         )
-        .child(section_label("运行中", cx))
-        .child(card_grid(&running_cards, cx))
-        .child(section_label("全部项目", cx))
-        .child(card_grid(&cards, cx))
+        .child(
+            v_flex()
+                .id("home-projects")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(style::section_label("运行中", cx))
+                .child(card_grid(&running_cards, cx))
+                .child(style::section_label("全部项目", cx))
+                .child(card_grid(&cards, cx)),
+        )
         .into_any_element()
 }
 
@@ -93,15 +106,6 @@ struct ProjectCard {
     project: Project,
     running: bool,
     endpoints: usize,
-}
-
-fn section_label(text: &'static str, cx: &mut Context<AppView>) -> impl IntoElement {
-    div()
-        .mt_4()
-        .mb_1()
-        .text_xs()
-        .text_color(cx.theme().muted_foreground)
-        .child(text)
 }
 
 fn card_grid(cards: &[ProjectCard], cx: &mut Context<AppView>) -> impl IntoElement {
@@ -125,35 +129,32 @@ fn project_card(card: &ProjectCard, cx: &mut Context<AppView>) -> impl IntoEleme
         Tag::secondary().small().child("已停止")
     };
 
-    v_flex()
-        .id(SharedString::from(format!("project-card-{id}")))
-        .w_full()
-        .gap_2()
-        .p_4()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().popover)
-        .cursor_pointer()
-        .shadow_sm()
-        .hover(|style| style.shadow_md())
-        .child(div().text_lg().font_semibold().child(name))
-        .child(
-            h_flex()
-                .gap_2()
-                .flex_wrap()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(badge)
-                .child(
-                    div()
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .child(format!(":{port}")),
-                )
-                .child(format!("{endpoints} 个接口")),
-        )
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.open_work(id.clone());
-            cx.notify();
-        }))
+    style::hover_lift(
+        style::card(cx)
+            .id(SharedString::from(format!("project-card-{id}")))
+            .w_full()
+            .gap_2()
+            .p_4()
+            .cursor_pointer()
+            .child(div().text_lg().font_semibold().child(name))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(badge)
+                    .child(
+                        div()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(format!(":{port}")),
+                    )
+                    .child(format!("{endpoints} 个接口")),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.open_work(id.clone());
+                cx.notify();
+            })),
+        cx,
+    )
 }

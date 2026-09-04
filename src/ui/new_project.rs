@@ -5,12 +5,13 @@ use gpui_component::{
     h_flex,
     input::{Input, InputState},
     notification::Notification,
-    v_flex, ActiveTheme as _, StyledExt as _, WindowExt as _,
+    v_flex, Sizable as _, StyledExt as _, WindowExt as _,
 };
 
 use crate::domain::HeaderKv;
 
 use super::app::AppView;
+use super::style;
 
 pub(super) struct NewProjectForm {
     name: Entity<InputState>,
@@ -39,6 +40,7 @@ pub(super) fn parse_port(raw: &str) -> Option<u16> {
 pub(super) fn view(form: &NewProjectForm, cx: &mut Context<AppView>) -> AnyElement {
     v_flex()
         .w_full()
+        .max_w(px(720.))
         .gap_3()
         .child(
             h_flex()
@@ -46,6 +48,7 @@ pub(super) fn view(form: &NewProjectForm, cx: &mut Context<AppView>) -> AnyEleme
                 .child(
                     Button::new("back-new-project")
                         .ghost()
+                        .small()
                         .label("← 项目")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.go_home_or_empty();
@@ -55,15 +58,10 @@ pub(super) fn view(form: &NewProjectForm, cx: &mut Context<AppView>) -> AnyEleme
                 .child(div().text_xl().font_semibold().child("新建项目")),
         )
         .child(
-            v_flex()
+            style::card(cx)
                 .w_full()
-                .gap_3()
-                .p_4()
-                .rounded(px(8.))
-                .border_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().popover)
-                .shadow_sm()
+                .gap_4()
+                .p_5()
                 .child(
                     v_form()
                         .columns(2)
@@ -99,16 +97,20 @@ pub(super) fn view(form: &NewProjectForm, cx: &mut Context<AppView>) -> AnyEleme
                                 .primary()
                                 .label("创建并打开")
                                 .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
                                     this.submit_new_project(window, cx);
                                     cx.notify();
                                 })),
                         )
-                        .child(Button::new("cancel-new-project").label("取消").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.go_home_or_empty();
-                                cx.notify();
-                            }),
-                        )),
+                        .child(
+                            Button::new("cancel-new-project")
+                                .ghost()
+                                .label("取消")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.go_home_or_empty();
+                                    cx.notify();
+                                })),
+                        ),
                 ),
         )
         .into_any_element()

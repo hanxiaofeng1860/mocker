@@ -9,7 +9,9 @@ use gpui_component::{
     form::{field, v_form},
     h_flex,
     input::{Input, InputEvent, InputState},
+    menu::{ContextMenuExt as _, PopupMenuItem},
     notification::Notification,
+    scroll::ScrollableElement as _,
     select::{Select, SelectEvent, SelectState},
     switch::Switch,
     tag::Tag,
@@ -18,7 +20,7 @@ use gpui_component::{
 };
 
 use crate::domain::{Endpoint, Field, FieldLoc, HeaderKv, Project, RequestLog, SceneKind};
-use crate::import::import_prompt;
+use crate::import::semantic_values_prompt;
 use crate::llm::ModelClient;
 use crate::service::AppService;
 use crate::sources::{home_dir, scan_sources};
@@ -27,6 +29,7 @@ use crate::store;
 use super::app::AppView;
 use super::new_project::parse_port;
 use super::settings::client_for_selection;
+use super::style;
 
 const METHODS: [&'static str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
@@ -97,6 +100,7 @@ pub(super) struct WorkbenchState {
     json_invalid: bool,
     fields: Vec<FieldRow>,
     show_settings: bool,
+    settings_anim: u64,
     regenerating: bool,
     suppress_save: bool,
     _subs: Vec<Subscription>,
@@ -154,7 +158,7 @@ impl WorkbenchState {
         });
         let path = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("/path")
+                .placeholder("/api/example")
                 .default_value(
                     selected
                         .as_ref()
@@ -222,6 +226,7 @@ impl WorkbenchState {
             current_scene: scene,
             fields: Vec::new(),
             show_settings: false,
+            settings_anim: 0,
             regenerating: false,
             suppress_save: false,
             _subs: Vec::new(),
@@ -303,14 +308,15 @@ impl WorkbenchState {
         let list = service.list_fields(endpoint_id).unwrap_or_default();
         for field in list {
             let row = FieldRow::new(field, window, cx);
+            let loc = row.field.location;
             self._field_subs
-                .push(subscribe_field_input(&row.name, window, cx));
+                .push(subscribe_field_input(&row.name, loc, window, cx));
             self._field_subs
-                .push(subscribe_field_input(&row.name_zh, window, cx));
+                .push(subscribe_field_input(&row.name_zh, loc, window, cx));
             self._field_subs
-                .push(subscribe_field_input(&row.type_name, window, cx));
+                .push(subscribe_field_input(&row.type_name, loc, window, cx));
             self._field_subs
-                .push(subscribe_field_input(&row.comment, window, cx));
+                .push(subscribe_field_input(&row.comment, loc, window, cx));
             self.fields.push(row);
         }
     }
@@ -333,12 +339,16 @@ impl WorkbenchState {
 
 fn subscribe_field_input(
     input: &Entity<InputState>,
+    loc: FieldLoc,
     window: &Window,
     cx: &mut Context<AppView>,
 ) -> Subscription {
-    cx.subscribe_in(input, window, |this, _, event: &InputEvent, window, cx| {
+    cx.subscribe_in(input, window, move |this, _, event: &InputEvent, window, cx| {
         if matches!(event, InputEvent::Change) {
             this.save_work_fields(window, cx);
+            if loc == FieldLoc::Response {
+                this.sync_json_from_response_fields(window, cx);
+            }
         }
     })
 }
@@ -350,25 +360,40 @@ pub(super) fn view(
 ) -> AnyElement {
     let running = service.is_running(&state.project_id);
     v_flex()
-        .w_full()
+        .size_full()
         .gap_3()
         .child(top_bar(state, running, cx))
         .when(state.show_settings, |this| {
-            this.child(project_settings_form(state, cx))
+            this.child(style::appear(
+                format!("work-settings-{}", state.settings_anim),
+                project_settings_form(state, cx),
+            ))
         })
         .child(
-            h_flex()
+            // h_flex() is items_center; that makes the editor as tall as
+            // its content so overflow never kicks in. Use a stretching row.
+            div()
+                .flex()
+                .flex_row()
+                .flex_1()
+                .min_h_0()
                 .w_full()
-                .items_start()
                 .gap_3()
                 .child(sidebar(state, cx))
                 .child(
                     v_flex()
                         .flex_1()
                         .min_w_0()
+                        .min_h_0()
+                        .h_full()
                         .gap_3()
-                        .child(editor(state, cx))
-                        .child(log_panel(state, cx)),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scrollbar()
+                                .child(editor(state, cx)),
+                        ),
                 ),
         )
         .into_any_element()
@@ -388,6 +413,7 @@ fn top_bar(state: &WorkbenchState, running: bool, cx: &mut Context<AppView>) -> 
         .child(
             Button::new("back-work")
                 .ghost()
+                .small()
                 .label("← 项目")
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.go_home_or_empty();
@@ -404,6 +430,8 @@ fn top_bar(state: &WorkbenchState, running: bool, cx: &mut Context<AppView>) -> 
         )
         .child(
             Button::new("toggle-run")
+                .small()
+                .when(!running, |this| this.primary())
                 .label(toggle)
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.toggle_work_runtime(window, cx);
@@ -411,9 +439,24 @@ fn top_bar(state: &WorkbenchState, running: bool, cx: &mut Context<AppView>) -> 
                 })),
         )
         .child(div().flex_1())
-        .child(live_pill(cx))
+        .child(live_pill("live-dot-bar", cx))
+        .child(
+            Button::new("work-logs")
+                .small()
+                .label(if state.logs.is_empty() {
+                    "请求日志".into()
+                } else {
+                    format!("请求日志 · {}", state.logs.len())
+                })
+                .on_click(cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.open_logs_dialog(window, cx);
+                    cx.notify();
+                })),
+        )
         .child(
             Button::new("work-import")
+                .small()
                 .label("导入")
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.go_import();
@@ -422,6 +465,7 @@ fn top_bar(state: &WorkbenchState, running: bool, cx: &mut Context<AppView>) -> 
         )
         .child(
             Button::new("work-project-settings")
+                .small()
                 .label("项目设置")
                 .selected(state.show_settings)
                 .on_click(cx.listener(|this, _, window, cx| {
@@ -431,36 +475,25 @@ fn top_bar(state: &WorkbenchState, running: bool, cx: &mut Context<AppView>) -> 
         )
 }
 
-fn live_pill(cx: &mut Context<AppView>) -> impl IntoElement {
+fn live_pill(dot_id: &'static str, cx: &mut Context<AppView>) -> impl IntoElement {
     h_flex()
         .items_center()
         .gap_1()
+        .h_6()
         .px_2()
-        .py_1()
         .rounded(px(999.))
         .bg(cx.theme().primary.opacity(0.16))
         .text_color(cx.theme().primary)
         .text_xs()
-        .child(
-            div()
-                .w(px(6.))
-                .h(px(6.))
-                .rounded(px(99.))
-                .bg(cx.theme().primary),
-        )
+        .child(style::pulse_dot(dot_id, cx.theme().primary))
         .child("已写入 · 下一请求生效")
 }
 
 fn project_settings_form(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement {
-    v_flex()
+    style::card(cx)
         .w_full()
         .gap_3()
         .p_4()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().popover)
-        .shadow_sm()
         .child(
             v_form()
                 .columns(2)
@@ -506,6 +539,7 @@ fn project_settings_form(state: &WorkbenchState, cx: &mut Context<AppView>) -> i
                 )
                 .child(
                     Button::new("cancel-project-settings")
+                        .ghost()
                         .label("取消")
                         .on_click(cx.listener(|this, _, _, cx| {
                             if let Some(work) = this.work.as_mut() {
@@ -531,23 +565,24 @@ fn sidebar(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElemen
         .collect();
     let selected = state.selected_id.clone();
 
-    v_flex()
+    style::sidebar_panel(cx)
         .w(px(240.))
         .min_w(px(240.))
+        .h_full()
+        .min_h_0()
         .gap_2()
         .p_2()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().background)
         .child(
             h_flex()
                 .w_full()
+                .flex_shrink_0()
                 .gap_1()
-                .child(Input::new(&state.search).flex_1())
+                .child(Input::new(&state.search).small().flex_1())
                 .child(
                     Button::new("new-ep-icon")
                         .primary()
+                        .small()
+                        .compact()
                         .label("+")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.create_work_endpoint(window, cx);
@@ -556,16 +591,25 @@ fn sidebar(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElemen
                 ),
         )
         .child(
-            v_flex().w_full().gap_1().children(
-                items
-                    .into_iter()
-                    .map(|ep| endpoint_row(ep, selected.as_deref(), cx))
-                    .collect::<Vec<_>>(),
-            ),
+            v_flex()
+                .id("work-ep-list")
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .overflow_y_scrollbar()
+                .gap_1()
+                .children(
+                    items
+                        .into_iter()
+                        .map(|ep| endpoint_row(ep, selected.as_deref(), cx))
+                        .collect::<Vec<_>>(),
+                ),
         )
         .child(
             Button::new("new-ep-full")
                 .w_full()
+                .flex_shrink_0()
+                .small()
                 .label("+ 手工新建接口")
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.create_work_endpoint(window, cx);
@@ -580,16 +624,19 @@ fn endpoint_row(
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let id = ep.id.clone();
+    let wrap_id = id.clone();
+    let menu_id = id.clone();
+    let view = cx.entity().downgrade();
     let on = selected == Some(ep.id.as_str());
     let tail = path_tail(&ep.path).to_string();
-    h_flex()
+    let row = h_flex()
         .id(SharedString::from(format!("ep-row-{id}")))
         .w_full()
         .gap_2()
         .items_start()
         .px_2()
         .py_2()
-        .rounded(px(6.))
+        .rounded(cx.theme().radius)
         .cursor_pointer()
         .border_l(px(2.))
         .border_color(if on {
@@ -616,6 +663,20 @@ fn endpoint_row(
             this.select_work_endpoint(id.clone(), window, cx);
             cx.notify();
         }))
+        .context_menu(move |menu, _, _| {
+            let view = view.clone();
+            let menu_id = menu_id.clone();
+            menu.item(PopupMenuItem::new("删除").on_click(move |_, window, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.delete_work_endpoint(menu_id.clone(), window, cx);
+                    cx.notify();
+                });
+            }))
+        });
+    div()
+        .id(SharedString::from(format!("ep-wrap-{wrap_id}")))
+        .w_full()
+        .child(row)
 }
 
 fn method_badge(method: &str) -> impl IntoElement {
@@ -665,9 +726,36 @@ fn editor(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement
         .child(
             h_flex()
                 .w_full()
-                .gap_2()
-                .child(Select::new(&state.method).small().w(px(110.)))
-                .child(Input::new(&state.path).flex_1()),
+                .items_end()
+                .gap_3()
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("方法"),
+                        )
+                        .child(Select::new(&state.method).w(px(120.))),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("请求路径"),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .child(Input::new(&state.path).w_full()),
+                        ),
+                ),
         )
         .child(block_label("当前场景 · 点选即切换运行时", cx))
         .child(scene_chips(state, cx))
@@ -699,16 +787,12 @@ fn editor(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement
 }
 
 fn empty_editor(cx: &mut Context<AppView>) -> impl IntoElement {
-    v_flex()
+    style::card(cx)
         .w_full()
         .gap_3()
         .p_8()
         .items_center()
         .justify_center()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().popover)
         .child(
             div()
                 .text_color(cx.theme().muted_foreground)
@@ -744,6 +828,7 @@ fn scene_chips(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoEl
             .map(|kind| {
                 let on = state.current_scene == kind;
                 Button::new(SharedString::from(format!("scene-{}", kind.as_str())))
+                    .small()
                     .label(scene_label(kind))
                     .selected(on)
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -776,13 +861,8 @@ fn field_table(
         FieldLoc::Response => "add-response",
     };
 
-    v_flex()
+    style::sheet(cx)
         .w_full()
-        .rounded(px(6.))
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().popover)
-        .shadow_sm()
         .when(rows.is_empty(), |this| {
             this.child(
                 h_flex()
@@ -796,6 +876,7 @@ fn field_table(
                     )
                     .child(
                         Button::new(SharedString::from(format!("{add_id}-empty")))
+                            .small()
                             .label(add_label)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.add_work_field(loc, window, cx);
@@ -820,6 +901,7 @@ fn field_table(
                         .gap_2()
                         .child(
                             Button::new(SharedString::from(add_id.to_string()))
+                                .small()
                                 .label(add_label)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.add_work_field(loc, window, cx);
@@ -829,6 +911,7 @@ fn field_table(
                         .when(loc == FieldLoc::Response, |this| {
                             this.child(
                                 Button::new("regen-fields")
+                                    .small()
                                     .label("按字段重新生成")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.confirm_regenerate_fields(window, cx);
@@ -884,8 +967,10 @@ fn field_row(
     let id = row.field.id.clone();
     let delete = Button::new(SharedString::from(format!("del-field-{id}")))
         .ghost()
-        .label("删")
+        .small()
+        .compact()
         .danger()
+        .label("删")
         .on_click(cx.listener(move |this, _, window, cx| {
             this.delete_work_field(id.clone(), window, cx);
             cx.notify();
@@ -937,13 +1022,9 @@ fn field_row(
 }
 
 fn json_sheet(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement {
-    v_flex()
+    style::sheet(cx)
         .w_full()
-        .rounded(px(6.))
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().popover)
-        .shadow_sm()
+        .overflow_hidden()
         .child(Input::new(&state.json).h(px(220.)).w_full())
         .when(state.json_invalid, |this| {
             this.child(
@@ -961,7 +1042,9 @@ fn json_sheet(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoEle
                 .items_center()
                 .child(
                     Button::new("ai-regen")
-                        .label("用 AI 重新生成成功数据")
+                        .small()
+                        .primary()
+                        .label("AI 填充语义值")
                         .loading(state.regenerating)
                         .disabled(state.regenerating)
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -969,60 +1052,45 @@ fn json_sheet(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoEle
                             cx.notify();
                         })),
                 )
-                .child(live_pill(cx)),
+                .child(live_pill("live-dot-json", cx)),
         )
 }
 
-fn log_panel(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement {
+fn log_dialog_body(logs: &[RequestLog], list_h: Pixels, cx: &App) -> impl IntoElement {
     v_flex()
         .w_full()
-        .rounded(px(6.))
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().background)
-        .child(
-            h_flex()
-                .w_full()
-                .justify_between()
-                .px_3()
-                .py_2()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child("请求日志")
-                .child(
-                    Button::new("clear-logs")
-                        .ghost()
-                        .label("清空")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.clear_work_logs(window, cx);
-                            cx.notify();
-                        })),
-                ),
-        )
+        .gap_2()
         .child(log_header(cx))
         .map(|this| {
-            if state.logs.is_empty() {
+            if logs.is_empty() {
                 this.child(
                     div()
                         .p_3()
-                        .text_xs()
+                        .text_sm()
                         .text_color(cx.theme().muted_foreground)
                         .child("暂无请求"),
                 )
             } else {
-                this.children(
-                    state
-                        .logs
-                        .iter()
-                        .take(100)
-                        .map(|log| log_row(log, cx))
-                        .collect::<Vec<_>>(),
+                this.child(
+                    v_flex()
+                        .id("dialog-log-rows")
+                        .w_full()
+                        .h(list_h)
+                        .max_h(list_h)
+                        .min_h_0()
+                        .overflow_y_scrollbar()
+                        .children(
+                            logs.iter()
+                                .take(100)
+                                .map(|log| log_row(log, cx))
+                                .collect::<Vec<_>>(),
+                        ),
                 )
             }
         })
 }
 
-fn log_header(cx: &mut Context<AppView>) -> impl IntoElement {
+fn log_header(cx: &App) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
     h_flex()
         .w_full()
@@ -1035,31 +1103,73 @@ fn log_header(cx: &mut Context<AppView>) -> impl IntoElement {
         .child(div().w(px(56.)).child("方法"))
         .child(div().flex_1().child("路径"))
         .child(div().w(px(48.)).child("状态"))
-        .child(div().w(px(72.)).child("场景"))
+        .child(div().w(px(56.)).child("场景"))
+        .child(div().w(px(52.)).child("耗时"))
 }
 
-fn log_row(log: &RequestLog, cx: &mut Context<AppView>) -> impl IntoElement {
-    h_flex()
+fn log_row(log: &RequestLog, cx: &App) -> impl IntoElement {
+    let missing = if log.missing_default_headers.is_empty() {
+        String::new()
+    } else {
+        format!("缺 header: {}", log.missing_default_headers.join(", "))
+    };
+    let preview = truncate_chars(log.res_body.trim(), 160);
+    v_flex()
         .w_full()
-        .gap_2()
         .px_3()
-        .py_1()
-        .text_xs()
-        .child(div().w(px(72.)).child(short_time(&log.at)))
-        .child(div().w(px(56.)).child(log.method.clone()))
+        .py_2()
+        .gap_1()
+        .border_b_1()
+        .border_color(cx.theme().border)
         .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .font_family(cx.theme().mono_font_family.clone())
-                .child(log.url.clone()),
+            h_flex()
+                .w_full()
+                .gap_2()
+                .text_xs()
+                .child(div().w(px(72.)).child(short_time(&log.at)))
+                .child(div().w(px(56.)).child(log.method.clone()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .child(log.url.clone()),
+                )
+                .child(div().w(px(48.)).child(log.status.to_string()))
+                .child(
+                    div()
+                        .w(px(56.))
+                        .child(scene_log_label(log.scene.as_deref())),
+                )
+                .child(div().w(px(52.)).child(format!("{}ms", log.elapsed_ms))),
         )
-        .child(div().w(px(48.)).child(log.status.to_string()))
-        .child(
-            div()
-                .w(px(72.))
-                .child(scene_log_label(log.scene.as_deref())),
-        )
+        .when(!missing.is_empty(), |this| {
+            this.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child(missing),
+            )
+        })
+        .when(!preview.is_empty(), |this| {
+            this.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .child(preview),
+            )
+        })
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    let mut chars = s.chars();
+    let taken: String = chars.by_ref().take(max).collect();
+    if chars.next().is_some() {
+        format!("{taken}…")
+    } else {
+        taken
+    }
 }
 
 fn block_label(text: &'static str, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -1116,6 +1226,7 @@ impl AppView {
         };
         work.show_settings = !work.show_settings;
         if work.show_settings {
+            work.settings_anim = work.settings_anim.saturating_add(1);
             let project = work.project.clone();
             work.settings_name.update(cx, |input, cx| {
                 input.set_value(project.name.clone(), window, cx);
@@ -1336,6 +1447,33 @@ impl AppView {
         }
     }
 
+    fn delete_work_endpoint(
+        &mut self,
+        endpoint_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(err) = self.service.delete_endpoint(&endpoint_id) {
+            window.push_notification(Notification::error(err.to_string()), cx);
+            return;
+        }
+        let Some(work) = self.work.as_mut() else {
+            return;
+        };
+        let was_selected = work.selected_id.as_deref() == Some(endpoint_id.as_str());
+        work.endpoints.retain(|ep| ep.id != endpoint_id);
+        if !was_selected {
+            return;
+        }
+        if let Some(next_id) = work.endpoints.first().map(|ep| ep.id.clone()) {
+            self.load_work_endpoint(&next_id, window, cx);
+        } else if let Some(work) = self.work.as_mut() {
+            work.selected_id = None;
+            work.fields.clear();
+            work._field_subs.clear();
+        }
+    }
+
     fn create_work_endpoint(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(work) = self.work.as_ref() else {
             return;
@@ -1385,6 +1523,9 @@ impl AppView {
         if let Some(work) = self.work.as_mut() {
             work.rebuild_fields(&self.service, &endpoint_id, window, cx);
         }
+        if loc == FieldLoc::Response {
+            self.sync_json_from_response_fields(window, cx);
+        }
     }
 
     fn delete_work_field(&mut self, field_id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -1394,6 +1535,10 @@ impl AppView {
         let Some(endpoint_id) = work.selected_id.clone() else {
             return;
         };
+        let was_response = work
+            .fields
+            .iter()
+            .any(|r| r.field.id == field_id && r.field.location == FieldLoc::Response);
         let fields: Vec<Field> = work
             .collect_fields(cx)
             .into_iter()
@@ -1405,6 +1550,9 @@ impl AppView {
         }
         if let Some(work) = self.work.as_mut() {
             work.rebuild_fields(&self.service, &endpoint_id, window, cx);
+        }
+        if was_response {
+            self.sync_json_from_response_fields(window, cx);
         }
     }
 
@@ -1425,41 +1573,37 @@ impl AppView {
     }
 
     fn confirm_regenerate_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let view = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, _| {
-            let view = view.clone();
-            dialog
-                .title("按字段重新生成该场景")
-                .child("将根据字段表重写当前场景 JSON。成功场景会丢失现有语义化取值。")
-                .confirm()
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("重新生成")
-                        .cancel_text("取消"),
-                )
-                .on_ok(move |_, window, cx| {
-                    let _ = view.update(cx, |this, cx| {
-                        this.regenerate_from_fields(window, cx);
-                    });
-                    true
-                })
-        });
+        self.sync_json_from_response_fields(window, cx);
     }
 
-    fn regenerate_from_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_json_from_response_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(work) = self.work.as_ref() else {
             return;
         };
+        if work.suppress_save {
+            return;
+        }
         let Some(id) = work.selected_id.clone() else {
             return;
         };
         let kind = work.current_scene;
-        match self.service.regenerate_scene_from_fields(&id, kind) {
-            Ok(()) => self.reload_work_json(window, cx),
-            Err(err) => {
+        if let Err(err) = self
+            .service
+            .regenerate_scene_from_fields(&id, SceneKind::Success)
+        {
+            window.push_notification(Notification::error(err.to_string()), cx);
+            return;
+        }
+        if kind == SceneKind::Empty {
+            if let Err(err) = self
+                .service
+                .regenerate_scene_from_fields(&id, SceneKind::Empty)
+            {
                 window.push_notification(Notification::error(err.to_string()), cx);
+                return;
             }
         }
+        self.reload_work_json(window, cx);
     }
 
     fn reload_work_json(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1515,12 +1659,15 @@ impl AppView {
             window.push_notification(Notification::error("去设置里选择模型来源"), cx);
             return;
         };
-        let paste = if ep.source_text.trim().is_empty() {
-            fields_as_paste(&ep, &fields)
-        } else {
-            ep.source_text.clone()
-        };
-        let prompt = import_prompt(&paste, &project.success_code, &project.fail_code);
+        let current_json = work.json.read(cx).value().to_string();
+        let prompt = semantic_values_prompt(
+            &project.success_code,
+            &ep.name,
+            &ep.method,
+            &ep.path,
+            &fields,
+            &current_json,
+        );
         work.regenerating = true;
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
@@ -1535,7 +1682,7 @@ impl AppView {
                         Ok(()) => {
                             view.reload_work_json(window, cx);
                             window.push_notification(
-                                Notification::success("已用 AI 写入成功场景"),
+                                Notification::success("已用 AI 填入语义化示例值"),
                                 cx,
                             );
                         }
@@ -1566,6 +1713,49 @@ impl AppView {
         if let Some(work) = self.work.as_mut() {
             work.logs.clear();
         }
+    }
+
+    fn open_logs_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_work_logs();
+        let logs = self
+            .work
+            .as_ref()
+            .map(|w| w.logs.clone())
+            .unwrap_or_default();
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let view = view.clone();
+            let vh = f32::from(window.viewport_size().height);
+            let list_h = px(vh.mul_add(0.52, 0.).clamp(220., 420.));
+            dialog
+                .title("请求日志")
+                .w(px(760.))
+                .max_h(px((vh * 0.78).clamp(360., 620.)))
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .max_h(px((vh * 0.62).clamp(260., 480.)))
+                        .child(
+                            h_flex().w_full().justify_end().child(
+                                Button::new("dlg-clear-logs")
+                                    .ghost()
+                                    .small()
+                                    .label("清空")
+                                    .on_click(move |_, window, cx| {
+                                        let _ = view.update(cx, |this, cx| {
+                                            this.clear_work_logs(window, cx);
+                                            cx.notify();
+                                        });
+                                        window.close_dialog(cx);
+                                    }),
+                            ),
+                        )
+                        .child(log_dialog_body(&logs, list_h, cx)),
+                )
+                .alert()
+                .button_props(DialogButtonProps::default().ok_text("关闭"))
+        });
     }
 }
 
@@ -1665,6 +1855,7 @@ fn field_path_label(field: &Field, all: &[FieldRow]) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn fields_as_paste(ep: &Endpoint, fields: &[Field]) -> String {
     let mut out = format!("{} {} {}\n", ep.method, ep.path, ep.name);
     for field in fields {

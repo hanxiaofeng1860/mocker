@@ -90,6 +90,65 @@ JSON 形状：
     )
 }
 
+pub fn semantic_values_prompt(
+    success_code: &str,
+    endpoint_name: &str,
+    method: &str,
+    path: &str,
+    fields: &[Field],
+    current_json: &str,
+) -> String {
+    let mut field_lines = String::new();
+    for field in fields.iter().filter(|f| f.location == FieldLoc::Response) {
+        let name = field.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let zh = field.name_zh.trim();
+        let ty = if field.type_name.trim().is_empty() {
+            "String"
+        } else {
+            field.type_name.trim()
+        };
+        let comment = field.comment.trim();
+        field_lines.push_str(&format!("- {name}"));
+        if !zh.is_empty() {
+            field_lines.push_str(&format!("（{zh}）"));
+        }
+        field_lines.push_str(&format!(" 类型:{ty}"));
+        if !comment.is_empty() {
+            field_lines.push_str(&format!(" {comment}"));
+        }
+        field_lines.push('\n');
+    }
+    if field_lines.is_empty() {
+        field_lines.push_str("（无字段表，请按当前 JSON 的键名推断语义）\n");
+    }
+    let skeleton = current_json.trim();
+    format!(
+        r#"你是 mock 数据生成器。根据接口字段的英文名、中文名和类型，给 JSON 填入符合真实业务语义的示例值。
+
+only return JSON object
+只返回一个 JSON 对象，不要 markdown 围栏，不要解释性文字。
+
+接口：{method} {path} {endpoint_name}
+项目成功码: {success_code}
+
+字段：
+{field_lines}
+当前 JSON：
+{skeleton}
+
+约束：
+- 保持字段名和 JSON 结构不变，只改 value。
+- code 必须使用项目成功码 {success_code}，msg 用「成功」。
+- 按语义填值：city/城市→国内城市名（如杭州、成都）；mobile/phone/手机→1 开头 11 位；name/姓名→中文姓名；org/机构→中文机构名；email→合法邮箱；id/sn→非空字符串；金额→合理数字；时间→ISO 或常见日期；枚举用字段说明里的合法值；列表 2～3 条。
+- 不要编造字段表或当前 JSON 里没有的键。
+- 不要返回解释性文字。
+"#
+    )
+}
+
 pub fn run_import(
     client: &impl ModelClient,
     paste: &str,
