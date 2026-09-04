@@ -1,4 +1,4 @@
-use gpui::{size, Size, Pixels, px};
+use gpui::{px, size, Pixels, Size};
 
 /// Design aspect used when the window is first opened (matches the original 1120×760).
 pub const DESIGN_WIDTH: f32 = 1120.;

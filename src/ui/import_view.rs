@@ -80,7 +80,12 @@ pub(super) fn view(
                 )
                 .child(div().text_xl().font_semibold().child("导入接口")),
         )
-        .child(Input::new(&state.paste).h(px(160.)).w_full().flex_shrink_0())
+        .child(
+            Input::new(&state.paste)
+                .h(px(160.))
+                .w_full()
+                .flex_shrink_0(),
+        )
         .child(
             div()
                 .flex_shrink_0()
@@ -149,31 +154,24 @@ pub(super) fn view(
             )
         })
         .when_some(state.error.clone(), |this, err| {
-            this.child(
-                style::appear(
-                    "import-error",
-                    div()
-                        .w_full()
-                        .p_3()
-                        .rounded(cx.theme().radius)
-                        .border_1()
-                        .border_color(cx.theme().danger)
-                        .bg(cx.theme().danger.opacity(0.08))
-                        .text_color(cx.theme().danger)
-                        .child(err),
-                ),
-            )
+            this.child(style::appear(
+                "import-error",
+                div()
+                    .w_full()
+                    .p_3()
+                    .rounded(cx.theme().radius)
+                    .border_1()
+                    .border_color(cx.theme().danger)
+                    .bg(cx.theme().danger.opacity(0.08))
+                    .text_color(cx.theme().danger)
+                    .child(err),
+            ))
         })
         .when(!state.drafts.is_empty(), |this| {
-            this.child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(style::appear(
-                        format!("import-preview-{preview_id}"),
-                        preview_table(state, cx),
-                    )),
-            )
+            this.child(div().flex_1().min_h_0().child(style::appear(
+                format!("import-preview-{preview_id}"),
+                preview_table(state, cx),
+            )))
         })
         .into_any_element()
 }

@@ -21,16 +21,11 @@ pub fn fade_in(id: impl Into<ElementId>, child: impl IntoElement) -> impl IntoEl
 
 pub fn appear(id: impl Into<SharedString>, child: impl IntoElement) -> impl IntoElement {
     let id = id.into();
-    div()
-        .id(id.clone())
-        .w_full()
-        .child(child)
-        .with_animation(
-            id,
-            Animation::new(Duration::from_millis(240))
-                .with_easing(cubic_bezier(0.22, 1.0, 0.36, 1.0)),
-            |this, delta| this.opacity(delta).mt((1.0 - delta) * px(10.)),
-        )
+    div().id(id.clone()).w_full().child(child).with_animation(
+        id,
+        Animation::new(Duration::from_millis(240)).with_easing(cubic_bezier(0.22, 1.0, 0.36, 1.0)),
+        |this, delta| this.opacity(delta).mt((1.0 - delta) * px(10.)),
+    )
 }
 
 pub fn paper_shadow(cx: &App) -> Vec<BoxShadow> {

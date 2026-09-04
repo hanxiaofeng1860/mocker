@@ -269,49 +269,43 @@ pub(super) fn view(state: &SettingsState, cx: &mut Context<AppView>) -> AnyEleme
                 .when(state.show_manual, |this| {
                     this.child(style::appear(
                         format!("manual-form-{}", state.manual_anim),
-                        style::card(cx)
-                            .w_full()
-                            .gap_3()
-                            .p_5()
-                            .child(
-                                v_form()
-                                    .columns(2)
-                                    .child(
-                                        field()
-                                            .label("Base URL")
-                                            .col_span(2)
-                                            .child(Input::new(&state.manual_base_url).w_full()),
-                                    )
-                                    .child(
-                                        field()
-                                            .label("API Key")
-                                            .col_span(2)
-                                            .child(Input::new(&state.manual_api_key).w_full()),
-                                    )
-                                    .child(
-                                        field().label("协议").col_span(2).child(
-                                            RadioGroup::horizontal("manual-protocol")
-                                                .selected_index(Some(protocol_ix))
-                                                .child(
-                                                    Radio::new("proto-anthropic")
-                                                        .label("anthropic-messages"),
-                                                )
-                                                .child(
-                                                    Radio::new("proto-openai").label("openai-chat"),
-                                                )
-                                                .on_click(cx.listener(|this, ix, window, cx| {
-                                                    this.set_manual_protocol(*ix, window, cx);
-                                                    cx.notify();
-                                                })),
-                                        ),
-                                    )
-                                    .child(
-                                        field()
-                                            .label("模型")
-                                            .col_span(2)
-                                            .child(Input::new(&state.manual_model).w_full()),
+                        style::card(cx).w_full().gap_3().p_5().child(
+                            v_form()
+                                .columns(2)
+                                .child(
+                                    field()
+                                        .label("Base URL")
+                                        .col_span(2)
+                                        .child(Input::new(&state.manual_base_url).w_full()),
+                                )
+                                .child(
+                                    field()
+                                        .label("API Key")
+                                        .col_span(2)
+                                        .child(Input::new(&state.manual_api_key).w_full()),
+                                )
+                                .child(
+                                    field().label("协议").col_span(2).child(
+                                        RadioGroup::horizontal("manual-protocol")
+                                            .selected_index(Some(protocol_ix))
+                                            .child(
+                                                Radio::new("proto-anthropic")
+                                                    .label("anthropic-messages"),
+                                            )
+                                            .child(Radio::new("proto-openai").label("openai-chat"))
+                                            .on_click(cx.listener(|this, ix, window, cx| {
+                                                this.set_manual_protocol(*ix, window, cx);
+                                                cx.notify();
+                                            })),
                                     ),
-                            ),
+                                )
+                                .child(
+                                    field()
+                                        .label("模型")
+                                        .col_span(2)
+                                        .child(Input::new(&state.manual_model).w_full()),
+                                ),
+                        ),
                     ))
                 })
                 .child(style::section_label("外观", cx))

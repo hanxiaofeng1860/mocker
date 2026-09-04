@@ -15,8 +15,8 @@ use gpui_component::{
     select::{Select, SelectEvent, SelectState},
     switch::Switch,
     tag::Tag,
-    v_flex, ActiveTheme as _, Disableable as _, IndexPath, Selectable as _, Sizable as _,
-    StyledExt as _, WindowExt as _,
+    v_flex, ActiveTheme as _, Colorize as _, Disableable as _, IndexPath, Selectable as _,
+    Sizable as _, StyledExt as _, WindowExt as _,
 };
 
 use crate::domain::{Endpoint, Field, FieldLoc, HeaderKv, Project, RequestLog, SceneKind};
@@ -343,14 +343,18 @@ fn subscribe_field_input(
     window: &Window,
     cx: &mut Context<AppView>,
 ) -> Subscription {
-    cx.subscribe_in(input, window, move |this, _, event: &InputEvent, window, cx| {
-        if matches!(event, InputEvent::Change) {
-            this.save_work_fields(window, cx);
-            if loc == FieldLoc::Response {
-                this.sync_json_from_response_fields(window, cx);
+    cx.subscribe_in(
+        input,
+        window,
+        move |this, _, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.save_work_fields(window, cx);
+                if loc == FieldLoc::Response {
+                    this.sync_json_from_response_fields(window, cx);
+                }
             }
-        }
-    })
+        },
+    )
 }
 
 pub(super) fn view(
@@ -571,7 +575,7 @@ fn sidebar(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElemen
         .h_full()
         .min_h_0()
         .gap_2()
-        .p_2()
+        .p_3()
         .child(
             h_flex()
                 .w_full()
@@ -597,7 +601,7 @@ fn sidebar(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElemen
                 .min_h_0()
                 .w_full()
                 .overflow_y_scrollbar()
-                .gap_1()
+                .gap(px(10.))
                 .children(
                     items
                         .into_iter()
@@ -634,23 +638,32 @@ fn endpoint_row(
         .w_full()
         .gap_2()
         .items_start()
-        .px_2()
+        .px_3()
         .py_2()
         .rounded(cx.theme().radius)
         .cursor_pointer()
-        .border_l(px(2.))
+        .border_1()
         .border_color(if on {
-            cx.theme().primary
+            cx.theme().primary.opacity(0.40)
         } else {
             cx.theme().transparent
         })
-        .when(on, |this| this.bg(cx.theme().popover).shadow_sm())
-        .hover(|s| s.bg(cx.theme().muted))
-        .child(method_badge(&ep.method))
+        .bg(if on {
+            cx.theme().popover
+        } else {
+            cx.theme().transparent
+        })
+        .when(on, |this| this.shadow(style::paper_shadow(cx)))
+        .when(!on, |this| this.hover(|s| s.bg(cx.theme().muted)))
+        .child(method_badge(&ep.method, cx))
         .child(
             v_flex()
                 .min_w_0()
-                .child(div().child(ep.name.clone()))
+                .child(
+                    div()
+                        .when(on, |this| this.font_medium())
+                        .child(ep.name.clone()),
+                )
                 .child(
                     div()
                         .text_xs()
@@ -676,17 +689,23 @@ fn endpoint_row(
     div()
         .id(SharedString::from(format!("ep-wrap-{wrap_id}")))
         .w_full()
+        .mt(px(6.))
+        .mb(px(6.))
         .child(row)
 }
 
-fn method_badge(method: &str) -> impl IntoElement {
-    let tag = match method.to_ascii_uppercase().as_str() {
-        "GET" => Tag::success(),
-        "DELETE" => Tag::danger(),
-        "PUT" | "PATCH" => Tag::warning(),
-        _ => Tag::info(),
+fn method_badge(method: &str, cx: &App) -> impl IntoElement {
+    let label = method.to_ascii_uppercase();
+    let ink = match label.as_str() {
+        "GET" => cx.theme().primary,
+        "DELETE" => cx.theme().accent,
+        "PUT" | "PATCH" => cx.theme().accent.mix(cx.theme().primary, 0.45),
+        _ => cx.theme().foreground,
     };
-    tag.small().child(method.to_ascii_uppercase())
+    Tag::custom(ink.opacity(0.12), ink, ink.opacity(0.22))
+        .small()
+        .rounded(px(6.))
+        .child(label)
 }
 
 fn editor(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -750,11 +769,7 @@ fn editor(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement
                                 .text_color(cx.theme().muted_foreground)
                                 .child("请求路径"),
                         )
-                        .child(
-                            div()
-                                .w_full()
-                                .child(Input::new(&state.path).w_full()),
-                        ),
+                        .child(div().w_full().child(Input::new(&state.path).w_full())),
                 ),
         )
         .child(block_label("当前场景 · 点选即切换运行时", cx))
@@ -1057,37 +1072,33 @@ fn json_sheet(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoEle
 }
 
 fn log_dialog_body(logs: &[RequestLog], list_h: Pixels, cx: &App) -> impl IntoElement {
-    v_flex()
-        .w_full()
-        .gap_2()
-        .child(log_header(cx))
-        .map(|this| {
-            if logs.is_empty() {
-                this.child(
-                    div()
-                        .p_3()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("暂无请求"),
-                )
-            } else {
-                this.child(
-                    v_flex()
-                        .id("dialog-log-rows")
-                        .w_full()
-                        .h(list_h)
-                        .max_h(list_h)
-                        .min_h_0()
-                        .overflow_y_scrollbar()
-                        .children(
-                            logs.iter()
-                                .take(100)
-                                .map(|log| log_row(log, cx))
-                                .collect::<Vec<_>>(),
-                        ),
-                )
-            }
-        })
+    v_flex().w_full().gap_2().child(log_header(cx)).map(|this| {
+        if logs.is_empty() {
+            this.child(
+                div()
+                    .p_3()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("暂无请求"),
+            )
+        } else {
+            this.child(
+                v_flex()
+                    .id("dialog-log-rows")
+                    .w_full()
+                    .h(list_h)
+                    .max_h(list_h)
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .children(
+                        logs.iter()
+                            .take(100)
+                            .map(|log| log_row(log, cx))
+                            .collect::<Vec<_>>(),
+                    ),
+            )
+        }
+    })
 }
 
 fn log_header(cx: &App) -> impl IntoElement {
@@ -1144,12 +1155,7 @@ fn log_row(log: &RequestLog, cx: &App) -> impl IntoElement {
                 .child(div().w(px(52.)).child(format!("{}ms", log.elapsed_ms))),
         )
         .when(!missing.is_empty(), |this| {
-            this.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().danger)
-                    .child(missing),
-            )
+            this.child(div().text_xs().text_color(cx.theme().danger).child(missing))
         })
         .when(!preview.is_empty(), |this| {
             this.child(

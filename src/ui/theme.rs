@@ -11,9 +11,15 @@ fn hsla(hex: u32) -> Hsla {
 
 pub fn load_app_fonts(cx: &App) {
     let fonts: Vec<Cow<'static, [u8]>> = vec![
-        Cow::Borrowed(include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf")),
-        Cow::Borrowed(include_bytes!("../../assets/fonts/JetBrainsMono-Medium.ttf")),
-        Cow::Borrowed(include_bytes!("../../assets/fonts/JetBrainsMono-SemiBold.ttf")),
+        Cow::Borrowed(include_bytes!(
+            "../../assets/fonts/JetBrainsMono-Regular.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../../assets/fonts/JetBrainsMono-Medium.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../../assets/fonts/JetBrainsMono-SemiBold.ttf"
+        )),
         Cow::Borrowed(include_bytes!("../../assets/fonts/JetBrainsMono-Bold.ttf")),
     ];
     cx.text_system()
