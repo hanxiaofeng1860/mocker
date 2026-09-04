@@ -127,9 +127,9 @@ pub fn apply_ink_theme(cx: &mut App) {
 
 fn apply_scrollbar(theme: &mut Theme, thumb: Hsla) {
     // Track fill flashes a full-height ghost while scrolling if it has alpha.
-    // Keep the thumb only, always on, no fade-out frames.
+    // Thumb only: show while scrolling, then fade (library delay ~2s).
     theme.scrollbar = transparent_black();
     theme.scrollbar_thumb = thumb.opacity(0.45);
     theme.scrollbar_thumb_hover = thumb.opacity(0.7);
-    theme.scrollbar_show = ScrollbarShow::Always;
+    theme.scrollbar_show = ScrollbarShow::Scrolling;
 }

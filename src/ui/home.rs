@@ -94,9 +94,9 @@ pub(super) fn home(service: &AppService, cx: &mut Context<AppView>) -> AnyElemen
                 .min_h_0()
                 .overflow_y_scroll()
                 .child(style::section_label("运行中", cx))
-                .child(card_grid(&running_cards, cx))
+                .child(card_grid("running", &running_cards, cx))
                 .child(style::section_label("全部项目", cx))
-                .child(card_grid(&cards, cx)),
+                .child(card_grid("all", &cards, cx)),
         )
         .into_any_element()
 }
@@ -108,16 +108,17 @@ struct ProjectCard {
     endpoints: usize,
 }
 
-fn card_grid(cards: &[ProjectCard], cx: &mut Context<AppView>) -> impl IntoElement {
+fn card_grid(section: &str, cards: &[ProjectCard], cx: &mut Context<AppView>) -> impl IntoElement {
+    let section = section.to_string();
     div().w_full().grid().grid_cols(2).gap_3().children(
         cards
             .iter()
-            .map(|card| project_card(card, cx))
+            .map(|card| project_card(&section, card, cx))
             .collect::<Vec<_>>(),
     )
 }
 
-fn project_card(card: &ProjectCard, cx: &mut Context<AppView>) -> impl IntoElement {
+fn project_card(section: &str, card: &ProjectCard, cx: &mut Context<AppView>) -> impl IntoElement {
     let id = card.project.id.clone();
     let name = card.project.name.clone();
     let port = card.project.port;
@@ -131,7 +132,7 @@ fn project_card(card: &ProjectCard, cx: &mut Context<AppView>) -> impl IntoEleme
 
     style::hover_lift(
         style::card(cx)
-            .id(SharedString::from(format!("project-card-{id}")))
+            .id(SharedString::from(format!("project-card-{section}-{id}")))
             .w_full()
             .gap_2()
             .p_4()

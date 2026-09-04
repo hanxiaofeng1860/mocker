@@ -775,7 +775,21 @@ fn editor(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement
                                 .text_color(cx.theme().muted_foreground)
                                 .child("请求路径"),
                         )
-                        .child(div().w_full().child(Input::new(&state.path).w_full())),
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .gap_2()
+                                .child(Input::new(&state.path).flex_1().min_w_0())
+                                .child(
+                                    Button::new("copy-request-url")
+                                        .small()
+                                        .label("复制 URL")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.copy_work_url(window, cx);
+                                        })),
+                                ),
+                        ),
                 ),
         )
         .child(block_label("当前场景 · 点选即切换运行时", cx))
@@ -886,19 +900,15 @@ fn field_table(
         .w_full()
         .when(rows.is_empty(), |this| {
             this.child(
-                h_flex()
-                    .p_2()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        Button::new(SharedString::from(format!("{add_id}-empty")))
-                            .small()
-                            .label(add_label)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.add_work_field(loc, window, cx);
-                                cx.notify();
-                            })),
-                    ),
+                h_flex().p_2().gap_2().items_center().child(
+                    Button::new(SharedString::from(format!("{add_id}-empty")))
+                        .small()
+                        .label(add_label)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.add_work_field(loc, window, cx);
+                            cx.notify();
+                        })),
+                ),
             )
         })
         .when(!rows.is_empty(), |this| {
@@ -1052,22 +1062,18 @@ fn json_sheet(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoEle
             )
         })
         .child(
-            h_flex()
-                .p_2()
-                .gap_2()
-                .items_center()
-                .child(
-                    Button::new("ai-regen")
-                        .small()
-                        .primary()
-                        .label("AI 填充语义值")
-                        .loading(state.regenerating)
-                        .disabled(state.regenerating)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.regenerate_success_ai(window, cx);
-                            cx.notify();
-                        })),
-                ),
+            h_flex().p_2().gap_2().items_center().child(
+                Button::new("ai-regen")
+                    .small()
+                    .primary()
+                    .label("AI 填充语义值")
+                    .loading(state.regenerating)
+                    .disabled(state.regenerating)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.regenerate_success_ai(window, cx);
+                        cx.notify();
+                    })),
+            ),
         )
 }
 
@@ -1224,6 +1230,16 @@ impl AppView {
         if let Err(err) = result {
             window.push_notification(Notification::error(err.to_string()), cx);
         }
+    }
+
+    fn copy_work_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(work) = self.work.as_ref() else {
+            return;
+        };
+        let path = work.path.read(cx).value();
+        let url = request_url(work.project.port, path.as_str());
+        cx.write_to_clipboard(ClipboardItem::new_string(url));
+        window.push_notification(Notification::success("已复制完整请求 URL"), cx);
     }
 
     pub(super) fn back_from_work(&mut self) {
@@ -1826,6 +1842,16 @@ fn short_time(at: &str) -> String {
     }
 }
 
+fn request_url(port: u16, path: &str) -> String {
+    let path = path.trim();
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    format!("http://127.0.0.1:{port}{path}")
+}
+
 fn header_keys_text(headers: &[HeaderKv]) -> String {
     headers
         .iter()
@@ -1890,7 +1916,7 @@ fn fields_as_paste(ep: &Endpoint, fields: &[Field]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_headers, path_tail, scene_log_label, short_time};
+    use super::{parse_headers, path_tail, request_url, scene_log_label, short_time};
     use crate::domain::HeaderKv;
 
     #[test]
@@ -1901,6 +1927,19 @@ mod tests {
         );
         assert_eq!(path_tail("/foo/"), "foo");
         assert_eq!(path_tail("/"), "/");
+    }
+
+    #[test]
+    fn request_url_joins_localhost_port_and_path() {
+        assert_eq!(
+            request_url(7788, "/hl/pub/phone/v1/queryPhoneBasicInfo"),
+            "http://127.0.0.1:7788/hl/pub/phone/v1/queryPhoneBasicInfo"
+        );
+        assert_eq!(
+            request_url(8080, "untitled"),
+            "http://127.0.0.1:8080/untitled"
+        );
+        assert_eq!(request_url(80, "/"), "http://127.0.0.1:80/");
     }
 
     #[test]
