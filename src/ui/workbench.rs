@@ -373,33 +373,35 @@ pub(super) fn view(
                 project_settings_form(state, cx),
             ))
         })
-        .child(
-            // h_flex() is items_center; that makes the editor as tall as
-            // its content so overflow never kicks in. Use a stretching row.
-            div()
-                .flex()
-                .flex_row()
-                .flex_1()
-                .min_h_0()
-                .w_full()
-                .gap_3()
-                .child(sidebar(state, cx))
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .min_h_0()
-                        .h_full()
-                        .gap_3()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_h_0()
-                                .overflow_y_scrollbar()
-                                .child(editor(state, cx)),
-                        ),
-                ),
-        )
+        .when(!state.show_settings, |this| {
+            this.child(
+                // h_flex() is items_center; that makes the editor as tall as
+                // its content so overflow never kicks in. Use a stretching row.
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .gap_3()
+                    .child(sidebar(state, cx))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .h_full()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_y_scrollbar()
+                                    .child(editor(state, cx)),
+                            ),
+                    ),
+            )
+        })
         .into_any_element()
 }
 
@@ -418,9 +420,13 @@ fn top_bar(state: &WorkbenchState, running: bool, cx: &mut Context<AppView>) -> 
             Button::new("back-work")
                 .ghost()
                 .small()
-                .label("← 项目")
+                .label(if state.show_settings {
+                    "← 工作台"
+                } else {
+                    "← 项目"
+                })
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.go_home_or_empty();
+                    this.back_from_work();
                     cx.notify();
                 })),
         )
@@ -881,14 +887,9 @@ fn field_table(
         .when(rows.is_empty(), |this| {
             this.child(
                 h_flex()
-                    .p_3()
+                    .p_2()
                     .gap_2()
                     .items_center()
-                    .child(
-                        div()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("暂无字段"),
-                    )
                     .child(
                         Button::new(SharedString::from(format!("{add_id}-empty")))
                             .small()
@@ -1066,8 +1067,7 @@ fn json_sheet(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoEle
                             this.regenerate_success_ai(window, cx);
                             cx.notify();
                         })),
-                )
-                .child(live_pill("live-dot-json", cx)),
+                ),
         )
 }
 
@@ -1224,6 +1224,16 @@ impl AppView {
         if let Err(err) = result {
             window.push_notification(Notification::error(err.to_string()), cx);
         }
+    }
+
+    pub(super) fn back_from_work(&mut self) {
+        if self.work.as_ref().is_some_and(|work| work.show_settings) {
+            if let Some(work) = self.work.as_mut() {
+                work.show_settings = false;
+            }
+            return;
+        }
+        self.go_home_or_empty();
     }
 
     fn toggle_project_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {

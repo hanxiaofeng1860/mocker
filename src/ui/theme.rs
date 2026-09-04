@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
-use gpui::{px, rgb, App, Hsla, SharedString};
-use gpui_component::{Colorize as _, Theme, ThemeMode};
+use gpui::{px, rgb, transparent_black, App, Hsla, SharedString};
+use gpui_component::{scroll::ScrollbarShow, Colorize as _, Theme, ThemeMode};
 
 const UI_FONT: &str = "JetBrains Mono";
 
@@ -70,15 +70,13 @@ pub fn apply_paper_theme(cx: &mut App) {
     theme.secondary_foreground = foreground;
     theme.secondary_hover = muted;
     theme.secondary_active = muted.darken(0.06);
-    theme.scrollbar = border.opacity(0.45);
-    theme.scrollbar_thumb = hsla(0x7A6F64).opacity(0.35);
-    theme.scrollbar_thumb_hover = hsla(0x7A6F64).opacity(0.5);
     theme.radius = px(8.);
     theme.radius_lg = px(12.);
     theme.shadow = true;
     // TitleBar reads these, not `background`.
     theme.title_bar = background;
     theme.title_bar_border = border;
+    apply_scrollbar(theme, hsla(0x7A6F64));
     apply_ui_font(theme);
 }
 
@@ -118,13 +116,20 @@ pub fn apply_ink_theme(cx: &mut App) {
     theme.secondary_foreground = foreground;
     theme.secondary_hover = muted;
     theme.secondary_active = muted.lighten(0.06);
-    theme.scrollbar = border.opacity(0.6);
-    theme.scrollbar_thumb = hsla(0x999999).opacity(0.35);
-    theme.scrollbar_thumb_hover = hsla(0x999999).opacity(0.5);
     theme.radius = px(8.);
     theme.radius_lg = px(12.);
     theme.shadow = true;
     theme.title_bar = background;
     theme.title_bar_border = border;
+    apply_scrollbar(theme, hsla(0x999999));
     apply_ui_font(theme);
+}
+
+fn apply_scrollbar(theme: &mut Theme, thumb: Hsla) {
+    // Track fill flashes a full-height ghost while scrolling if it has alpha.
+    // Keep the thumb only, always on, no fade-out frames.
+    theme.scrollbar = transparent_black();
+    theme.scrollbar_thumb = thumb.opacity(0.45);
+    theme.scrollbar_thumb_hover = thumb.opacity(0.7);
+    theme.scrollbar_show = ScrollbarShow::Always;
 }
