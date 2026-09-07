@@ -39,6 +39,15 @@ const FIELD_TYPES: [&'static str; 7] = [
 const TYPE_COL_W: f32 = 96.;
 const ADD_CHILD_COL_W: f32 = 22.;
 const DELETE_COL_W: f32 = 36.;
+const SIDEBAR_MIN: f32 = 180.;
+const SIDEBAR_DEFAULT: f32 = 240.;
+const SIDEBAR_MAX: f32 = 420.;
+
+#[derive(Clone, Copy)]
+struct SplitDrag {
+    start_x: f32,
+    start_width: f32,
+}
 
 fn select_content_on_click(input: Input) -> Div {
     div()
@@ -120,6 +129,8 @@ pub(super) struct WorkbenchState {
     fields: Vec<FieldRow>,
     show_settings: bool,
     settings_anim: u64,
+    sidebar_width: f32,
+    split_drag: Option<SplitDrag>,
     regenerating: bool,
     suppress_save: bool,
     _subs: Vec<Subscription>,
@@ -264,6 +275,8 @@ impl WorkbenchState {
             fields: Vec::new(),
             show_settings: false,
             settings_anim: 0,
+            sidebar_width: SIDEBAR_DEFAULT,
+            split_drag: None,
             regenerating: false,
             suppress_save: false,
             _subs: Vec::new(),
@@ -453,34 +466,7 @@ pub(super) fn view(
             ))
         })
         .when(!state.show_settings, |this| {
-            this.child(
-                // h_flex() is items_center; that makes the editor as tall as
-                // its content so overflow never kicks in. Use a stretching row.
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .gap_3()
-                    .child(sidebar(state, cx))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .min_h_0()
-                            .h_full()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .id("work-editor")
-                                    .flex_1()
-                                    .min_h_0()
-                                    .overflow_y_scroll()
-                                    .child(editor(state, cx)),
-                            ),
-                    ),
-            )
+            this.child(split_body(state, cx))
         })
         .into_any_element()
 }
@@ -663,6 +649,108 @@ fn project_settings_form(state: &WorkbenchState, cx: &mut Context<AppView>) -> i
         )
 }
 
+fn split_body(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement {
+    let view = cx.entity().downgrade();
+    div()
+        .id("work-split")
+        .flex()
+        .flex_row()
+        .flex_1()
+        .min_h_0()
+        .w_full()
+        .child(
+            div()
+                .w(px(state.sidebar_width))
+                .flex_shrink_0()
+                .h_full()
+                .min_h_0()
+                .child(sidebar(state, cx)),
+        )
+        .child(split_handle(state.split_drag.is_some(), cx))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .h_full()
+                .pl_3()
+                .gap_3()
+                .child(
+                    div()
+                        .id("work-editor")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(editor(state, cx)),
+                ),
+        )
+        .child(
+            canvas(
+                |_, _, _| {},
+                move |_, _, window, _cx| {
+                    let view_move = view.clone();
+                    window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                        if !phase.bubble() {
+                            return;
+                        }
+                        let _ = view_move.update(cx, |this, cx| {
+                            if this.drag_work_split(ev.position.x) {
+                                cx.notify();
+                            }
+                        });
+                    });
+                    let view_up = view.clone();
+                    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                        if !phase.bubble() {
+                            return;
+                        }
+                        let _ = view_up.update(cx, |this, cx| {
+                            if this.end_work_split() {
+                                cx.notify();
+                            }
+                        });
+                    });
+                },
+            )
+            .w(px(0.))
+            .h(px(0.)),
+        )
+}
+
+fn split_handle(dragging: bool, cx: &mut Context<AppView>) -> impl IntoElement {
+    let line = if dragging {
+        cx.theme().primary
+    } else {
+        cx.theme().border
+    };
+    div()
+        .id("work-split-handle")
+        .relative()
+        .w(px(8.))
+        .h_full()
+        .flex_shrink_0()
+        .cursor(CursorStyle::ResizeColumn)
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+                this.begin_work_split(ev.position.x);
+                cx.notify();
+            }),
+        )
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(3.))
+                .w(px(2.))
+                .rounded(px(1.))
+                .bg(line),
+        )
+}
+
 fn sidebar(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement {
     let query = state.search.read(cx).value().to_lowercase();
     let items: Vec<Endpoint> = state
@@ -678,8 +766,7 @@ fn sidebar(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElemen
     let selected = state.selected_id.clone();
 
     style::sidebar_panel(cx)
-        .w(px(240.))
-        .min_w(px(240.))
+        .w_full()
         .h_full()
         .min_h_0()
         .overflow_hidden()
@@ -1400,6 +1487,39 @@ impl AppView {
         if let Ok(logs) = self.service.logs(&work.project_id) {
             work.logs = logs;
         }
+    }
+
+    fn begin_work_split(&mut self, mouse_x: Pixels) {
+        let Some(work) = self.work.as_mut() else {
+            return;
+        };
+        work.split_drag = Some(SplitDrag {
+            start_x: f32::from(mouse_x),
+            start_width: work.sidebar_width,
+        });
+    }
+
+    fn drag_work_split(&mut self, mouse_x: Pixels) -> bool {
+        let Some(work) = self.work.as_mut() else {
+            return false;
+        };
+        let Some(drag) = work.split_drag else {
+            return false;
+        };
+        let next = (drag.start_width + f32::from(mouse_x) - drag.start_x)
+            .clamp(SIDEBAR_MIN, SIDEBAR_MAX)
+            .round();
+        if (next - work.sidebar_width).abs() < 0.5 {
+            return false;
+        }
+        work.sidebar_width = next;
+        true
+    }
+
+    fn end_work_split(&mut self) -> bool {
+        self.work
+            .as_mut()
+            .is_some_and(|work| work.split_drag.take().is_some())
     }
 
     fn toggle_work_runtime(&mut self, window: &mut Window, cx: &mut Context<Self>) {
