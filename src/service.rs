@@ -92,6 +92,15 @@ impl AppService {
         self.runtime.refresh(&id)
     }
 
+    pub fn delete_project(&self, project_id: &str) -> Result<()> {
+        self.runtime.stop(project_id)?;
+        lock(&self.store)?.delete_project(project_id)?;
+        if let Ok(mut paste) = self.last_paste.lock() {
+            paste.remove(project_id);
+        }
+        Ok(())
+    }
+
     fn relabel_project_scenes(
         &self,
         project_id: &str,

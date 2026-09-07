@@ -1,9 +1,11 @@
 use gpui::*;
 use gpui_component::{
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonVariant, ButtonVariants as _},
+    dialog::DialogButtonProps,
     h_flex,
+    notification::Notification,
     tag::Tag,
-    v_flex, ActiveTheme as _, Sizable as _, StyledExt as _,
+    v_flex, ActiveTheme as _, Sizable as _, StyledExt as _, WindowExt as _,
 };
 
 use crate::domain::Project;
@@ -21,9 +23,9 @@ pub(super) fn empty(cx: &mut Context<AppView>) -> AnyElement {
         .child(div().text_xl().font_semibold().child("还没有项目"))
         .child(
             div()
-                .max_w(px(420.))
+                .max_w(px(440.))
                 .text_color(cx.theme().muted_foreground)
-                .child("一个前端对应一个项目、一个端口。先建项目，再导入或手工加接口。"),
+                .child("从设计文档到可请求的接口，只隔一个本地端口。"),
         )
         .child(
             Button::new("empty-new-project")
@@ -137,7 +139,41 @@ fn project_card(section: &str, card: &ProjectCard, cx: &mut Context<AppView>) ->
             .gap_2()
             .p_4()
             .cursor_pointer()
-            .child(div().text_lg().font_semibold().child(name))
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_start()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_lg()
+                            .font_semibold()
+                            .child(name.clone()),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("del-project-{section}-{id}")))
+                            .ghost()
+                            .small()
+                            .danger()
+                            .label("删除")
+                            .on_click(cx.listener({
+                                let id = id.clone();
+                                let name = name.clone();
+                                move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.confirm_delete_project(
+                                        id.clone(),
+                                        name.clone(),
+                                        running,
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            })),
+                    ),
+            )
             .child(
                 h_flex()
                     .gap_2()
@@ -158,4 +194,53 @@ fn project_card(section: &str, card: &ProjectCard, cx: &mut Context<AppView>) ->
             })),
         cx,
     )
+}
+
+impl AppView {
+    fn confirm_delete_project(
+        &mut self,
+        id: String,
+        name: String,
+        running: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity().downgrade();
+        let hint = if running {
+            format!("「{name}」正在运行，删除前会先停止。接口和场景都会一起删掉，且无法恢复。")
+        } else {
+            format!("删除「{name}」后，接口和场景都会一起删掉，且无法恢复。")
+        };
+        window.open_dialog(cx, move |dialog, _, _| {
+            let view = view.clone();
+            let id = id.clone();
+            let hint = hint.clone();
+            dialog
+                .title("删除项目")
+                .child(hint)
+                .confirm()
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("删除")
+                        .cancel_text("取消")
+                        .ok_variant(ButtonVariant::Danger),
+                )
+                .on_ok(move |_, window, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        this.delete_home_project(&id, window, cx);
+                        cx.notify();
+                    });
+                    true
+                })
+        });
+    }
+
+    fn delete_home_project(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(err) = self.service.delete_project(id) {
+            window.push_notification(Notification::error(err.to_string()), cx);
+            return;
+        }
+        self.go_home_or_empty();
+        window.push_notification(Notification::success("项目已删除"), cx);
+    }
 }
