@@ -37,7 +37,7 @@ const METHODS: [&'static str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 const FIELD_TYPES: [&'static str; 7] = [
     "String", "Integer", "Number", "Boolean", "Object", "Array", "Null",
 ];
-const TYPE_COL_W: f32 = 120.;
+const TYPE_COL_W: f32 = 96.;
 const ADD_CHILD_COL_W: f32 = 22.;
 const DELETE_COL_W: f32 = 36.;
 
@@ -465,9 +465,10 @@ pub(super) fn view(
                             .gap_3()
                             .child(
                                 div()
+                                    .id("work-editor")
                                     .flex_1()
                                     .min_h_0()
-                                    .overflow_y_scrollbar()
+                                    .overflow_y_scroll()
                                     .child(editor(state, cx)),
                             ),
                     ),
@@ -1004,8 +1005,6 @@ fn field_table(
         FieldLoc::Body => "add-body",
         FieldLoc::Response => "add-response",
     };
-    let data_key = state.project.envelope.data_key.clone();
-    let data_kind = selected_data_kind(state);
 
     style::sheet(cx)
         .w_full()
@@ -1023,9 +1022,9 @@ fn field_table(
             )
         })
         .when(!rows.is_empty(), |this| {
-            this.child(field_header(loc, data_kind, cx)).children(
+            this.child(field_header(loc, cx)).children(
                 rows.into_iter()
-                    .map(|row| field_row(row, loc, &state.fields, &data_key, data_kind, cx))
+                    .map(|row| field_row(row, loc, &state.fields, cx))
                     .collect::<Vec<_>>(),
             )
         })
@@ -1047,7 +1046,7 @@ fn field_table(
         )
 }
 
-fn field_header(loc: FieldLoc, data_kind: DataKind, cx: &mut Context<AppView>) -> impl IntoElement {
+fn field_header(loc: FieldLoc, cx: &mut Context<AppView>) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
     let flex_cell = |text: &'static str| {
         div()
@@ -1069,9 +1068,6 @@ fn field_header(loc: FieldLoc, data_kind: DataKind, cx: &mut Context<AppView>) -
             .gap_1()
             .px_2()
             .pt_2()
-            .when(data_kind == DataKind::Object, |this| {
-                this.child(flex_cell("路径"))
-            })
             .child(flex_cell("英文名"))
             .child(flex_cell("中文名"))
             .child(type_cell)
@@ -1180,8 +1176,6 @@ fn field_row(
     row: &FieldRow,
     loc: FieldLoc,
     all: &[FieldRow],
-    data_key: &str,
-    data_kind: DataKind,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let id = row.field.id.clone();
@@ -1203,7 +1197,6 @@ fn field_row(
         .unwrap_or_else(|| row.field.type_name.clone());
     match loc {
         FieldLoc::Response => {
-            let path = field_path_label(&row.field, all, data_key, data_kind);
             let depth = field_nest_depth(&row.field, all);
             h_flex()
                 .w_full()
@@ -1211,17 +1204,6 @@ fn field_row(
                 .gap_1()
                 .px_2()
                 .py_1()
-                .when(data_kind == DataKind::Object, |this| {
-                    this.child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .child(path),
-                    )
-                })
                 .child(field_name_cell(&row.name, depth, cx))
                 .child(Input::new(&row.name_zh).small().flex_1().min_w_0())
                 .child(type_select_cell(&row.type_select))
@@ -2265,32 +2247,6 @@ fn field_name_cell(
             )
         })
         .child(Input::new(name).small().flex_1().min_w_0())
-}
-
-fn field_path_label(
-    field: &Field,
-    all: &[FieldRow],
-    data_key: &str,
-    data_kind: DataKind,
-) -> String {
-    let fallback = if data_key.trim().is_empty() {
-        "data"
-    } else {
-        data_key.trim()
-    };
-    let parent_name = field.parent_id.as_ref().and_then(|pid| {
-        all.iter()
-            .find(|r| r.field.id == *pid)
-            .map(|r| r.field.name.clone())
-            .filter(|s| !s.is_empty())
-    });
-    match data_kind {
-        DataKind::Array => match parent_name {
-            Some(name) => format!("{fallback}[].{name}"),
-            None => format!("{fallback}[]"),
-        },
-        DataKind::Object => parent_name.unwrap_or_else(|| fallback.to_string()),
-    }
 }
 
 #[allow(dead_code)]
