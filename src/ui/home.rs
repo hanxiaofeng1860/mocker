@@ -132,9 +132,11 @@ fn project_card(section: &str, card: &ProjectCard, cx: &mut Context<AppView>) ->
         Tag::secondary().small().child("已停止")
     };
 
+    let group = SharedString::from(format!("project-card-{section}-{id}"));
     style::hover_lift(
         style::card(cx)
-            .id(SharedString::from(format!("project-card-{section}-{id}")))
+            .id(group.clone())
+            .group(group.clone())
             .w_full()
             .gap_2()
             .p_4()
@@ -153,25 +155,32 @@ fn project_card(section: &str, card: &ProjectCard, cx: &mut Context<AppView>) ->
                             .child(name.clone()),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("del-project-{section}-{id}")))
-                            .ghost()
-                            .small()
-                            .danger()
-                            .label("删除")
-                            .on_click(cx.listener({
-                                let id = id.clone();
-                                let name = name.clone();
-                                move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.confirm_delete_project(
-                                        id.clone(),
-                                        name.clone(),
-                                        running,
-                                        window,
-                                        cx,
-                                    );
-                                }
-                            })),
+                        div()
+                            .invisible()
+                            .group_hover(group, |style| style.visible())
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "del-project-{section}-{id}"
+                                )))
+                                .ghost()
+                                .small()
+                                .danger()
+                                .label("删除")
+                                .on_click(cx.listener({
+                                    let id = id.clone();
+                                    let name = name.clone();
+                                    move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.confirm_delete_project(
+                                            id.clone(),
+                                            name.clone(),
+                                            running,
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                })),
+                            ),
                     ),
             )
             .child(
