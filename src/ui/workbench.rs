@@ -38,6 +38,8 @@ const FIELD_TYPES: [&'static str; 7] = [
     "String", "Integer", "Number", "Boolean", "Object", "Array", "Null",
 ];
 const TYPE_COL_W: f32 = 120.;
+const ADD_CHILD_COL_W: f32 = 22.;
+const DELETE_COL_W: f32 = 36.;
 
 pub(super) struct FieldRow {
     field: Field,
@@ -400,6 +402,7 @@ fn subscribe_field_type(
                 if loc == FieldLoc::Response {
                     this.sync_json_from_response_fields(window, cx);
                 }
+                cx.notify();
             }
         },
     )
@@ -1072,7 +1075,8 @@ fn field_header(loc: FieldLoc, data_kind: DataKind, cx: &mut Context<AppView>) -
             .child(flex_cell("英文名"))
             .child(flex_cell("中文名"))
             .child(type_cell)
-            .child(div().w(px(36.)).flex_shrink_0()),
+            .child(div().w(px(ADD_CHILD_COL_W)).flex_shrink_0())
+            .child(div().w(px(DELETE_COL_W)).flex_shrink_0()),
         _ => h_flex()
             .w_full()
             .gap_1()
@@ -1099,6 +1103,43 @@ fn type_select_cell(state: &Entity<SelectState<SearchableVec<String>>>) -> impl 
         .w(px(TYPE_COL_W))
         .flex_shrink_0()
         .child(Select::new(state).small().w_full())
+}
+
+fn add_child_cell(
+    field_id: String,
+    enabled: bool,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let muted = cx.theme().muted;
+    let hover = cx.theme().secondary_hover;
+    let fg = cx.theme().foreground;
+    let radius = cx.theme().radius;
+    div()
+        .id(SharedString::from(format!("add-child-{field_id}")))
+        .w(px(ADD_CHILD_COL_W))
+        .h(px(ADD_CHILD_COL_W))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(enabled, |this| {
+            this.rounded(radius)
+                .bg(muted)
+                .text_color(fg)
+                .text_xs()
+                .cursor_pointer()
+                .hover(move |this| this.bg(hover))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.add_work_field_under(
+                        FieldLoc::Response,
+                        Some(field_id.clone()),
+                        window,
+                        cx,
+                    );
+                    cx.notify();
+                }))
+                .child("+")
+        })
 }
 
 fn selected_data_kind(state: &WorkbenchState) -> DataKind {
@@ -1154,12 +1195,19 @@ fn field_row(
             this.delete_work_field(id.clone(), window, cx);
             cx.notify();
         }));
+    let type_name = row
+        .type_select
+        .read(cx)
+        .selected_value()
+        .cloned()
+        .unwrap_or_else(|| row.field.type_name.clone());
     match loc {
         FieldLoc::Response => {
             let path = field_path_label(&row.field, all, data_key, data_kind);
             let depth = field_nest_depth(&row.field, all);
             h_flex()
                 .w_full()
+                .items_center()
                 .gap_1()
                 .px_2()
                 .py_1()
@@ -1174,10 +1222,20 @@ fn field_row(
                             .child(path),
                     )
                 })
-                .child(field_name_cell(&row.name, depth, data_kind, cx))
+                .child(field_name_cell(&row.name, depth, cx))
                 .child(Input::new(&row.name_zh).small().flex_1().min_w_0())
                 .child(type_select_cell(&row.type_select))
-                .child(delete)
+                .child(add_child_cell(
+                    row.field.id.clone(),
+                    can_have_children(&type_name),
+                    cx,
+                ))
+                .child(
+                    div()
+                        .w(px(DELETE_COL_W))
+                        .flex_shrink_0()
+                        .child(delete),
+                )
         }
         _ => {
             let required = row.required;
@@ -1727,6 +1785,23 @@ impl AppView {
     }
 
     fn add_work_field(&mut self, loc: FieldLoc, window: &mut Window, cx: &mut Context<Self>) {
+        let parent_id = if loc == FieldLoc::Response {
+            self.work.as_ref().and_then(|work| {
+                default_response_parent_id(&work.collect_fields(cx), &work.project.envelope)
+            })
+        } else {
+            None
+        };
+        self.add_work_field_under(loc, parent_id, window, cx);
+    }
+
+    fn add_work_field_under(
+        &mut self,
+        loc: FieldLoc,
+        parent_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(work) = self.work.as_ref() else {
             return;
         };
@@ -1737,18 +1812,21 @@ impl AppView {
             return;
         };
         let mut fields = work.collect_fields(cx);
-        fields.push(Field {
-            id: store::new_id(),
-            endpoint_id: endpoint_id.clone(),
-            location: loc,
-            name: String::new(),
-            name_zh: String::new(),
-            type_name: "String".into(),
-            required: false,
-            comment: String::new(),
-            enum_values: Vec::new(),
-            parent_id: None,
-        });
+        insert_field(
+            &mut fields,
+            Field {
+                id: store::new_id(),
+                endpoint_id: endpoint_id.clone(),
+                location: loc,
+                name: String::new(),
+                name_zh: String::new(),
+                type_name: "String".into(),
+                required: false,
+                comment: String::new(),
+                enum_values: Vec::new(),
+                parent_id,
+            },
+        );
         if let Err(err) = self.service.save_fields(&endpoint_id, fields) {
             window.push_notification(Notification::error(err.to_string()), cx);
             return;
@@ -2091,6 +2169,65 @@ fn trimmed_or(value: &str, fallback: &str) -> String {
     }
 }
 
+fn can_have_children(type_name: &str) -> bool {
+    matches!(
+        type_name.trim().to_ascii_lowercase().as_str(),
+        "object" | "array"
+    )
+}
+
+fn default_response_parent_id(fields: &[Field], envelope: &Envelope) -> Option<String> {
+    let data_key = envelope.sanitized().data_key;
+    fields
+        .iter()
+        .find(|field| {
+            field.location == FieldLoc::Response
+                && field.parent_id.is_none()
+                && field.name.trim() == data_key
+        })
+        .map(|field| field.id.clone())
+}
+
+fn insert_field(fields: &mut Vec<Field>, new: Field) {
+    if let Some(parent_id) = new.parent_id.clone() {
+        if let Some(index) = last_block_index(fields, &parent_id) {
+            fields.insert(index + 1, new);
+            return;
+        }
+    }
+    fields.push(new);
+}
+
+fn last_block_index(fields: &[Field], parent_id: &str) -> Option<usize> {
+    let mut last = None;
+    for (index, field) in fields.iter().enumerate() {
+        if field.id == parent_id || is_under(fields, &field.id, parent_id) {
+            last = Some(index);
+        }
+    }
+    last
+}
+
+fn is_under(fields: &[Field], id: &str, ancestor: &str) -> bool {
+    let mut current = fields
+        .iter()
+        .find(|field| field.id == id)
+        .and_then(|field| field.parent_id.as_deref());
+    for _ in 0..16 {
+        let Some(parent_id) = current else {
+            return false;
+        };
+        if parent_id == ancestor {
+            return true;
+        }
+        current = fields
+            .iter()
+            .find(|field| field.id == parent_id)
+            .and_then(|field| field.parent_id.as_deref());
+    }
+    false
+}
+
 fn field_nest_depth(field: &Field, all: &[FieldRow]) -> usize {
     let mut depth = 0;
     let mut current = field.parent_id.as_deref();
@@ -2110,20 +2247,15 @@ fn field_nest_depth(field: &Field, all: &[FieldRow]) -> usize {
 fn field_name_cell(
     name: &Entity<InputState>,
     depth: usize,
-    data_kind: DataKind,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
-    let indent = if data_kind == DataKind::Array {
-        depth
-    } else {
-        0
-    };
+    let indent = depth;
     h_flex()
         .flex_1()
         .min_w_0()
         .gap_1()
         .when(indent > 0, |this| this.pl(px(indent as f32 * 12.)))
-        .when(data_kind == DataKind::Array && indent > 0, |this| {
+        .when(indent > 0, |this| {
             this.child(
                 div()
                     .flex_shrink_0()
