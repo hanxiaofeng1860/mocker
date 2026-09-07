@@ -8,7 +8,7 @@ use gpui_component::{
     dialog::DialogButtonProps,
     form::{field, v_form},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, SelectAll},
     menu::{ContextMenuExt as _, PopupMenuItem},
     notification::Notification,
     scroll::ScrollableElement as _,
@@ -40,6 +40,16 @@ const FIELD_TYPES: [&'static str; 7] = [
 const TYPE_COL_W: f32 = 96.;
 const ADD_CHILD_COL_W: f32 = 22.;
 const DELETE_COL_W: f32 = 36.;
+
+fn select_content_on_click(input: Input) -> Div {
+    div()
+        .on_mouse_down(MouseButton::Left, |event, window, cx| {
+            if event.click_count >= 2 {
+                window.dispatch_action(Box::new(SelectAll), cx);
+            }
+        })
+        .child(input)
+}
 
 pub(super) struct FieldRow {
     field: Field,
@@ -179,8 +189,7 @@ impl WorkbenchState {
         });
         let json = cx.new(|cx| {
             InputState::new(window, cx)
-                .multi_line(true)
-                .rows(14)
+                .auto_grow(10, 200)
                 .placeholder("{ }")
                 .default_value(json_text.clone())
         });
@@ -583,44 +592,44 @@ fn project_settings_form(state: &WorkbenchState, cx: &mut Context<AppView>) -> i
                     field()
                         .label("项目名称")
                         .col_span(2)
-                        .child(Input::new(&state.settings_name).w_full()),
+                        .child(select_content_on_click(Input::new(&state.settings_name).w_full()).w_full()),
                 )
                 .child(
                     field()
                         .label("端口")
-                        .child(Input::new(&state.settings_port).w_full()),
+                        .child(select_content_on_click(Input::new(&state.settings_port).w_full()).w_full()),
                 )
                 .child(
                     field()
                         .label("成功码")
-                        .child(Input::new(&state.settings_success).w_full()),
+                        .child(select_content_on_click(Input::new(&state.settings_success).w_full()).w_full()),
                 )
                 .child(
                     field()
                         .label("失败码")
-                        .child(Input::new(&state.settings_fail).w_full()),
+                        .child(select_content_on_click(Input::new(&state.settings_fail).w_full()).w_full()),
                 )
                 .child(
                     field()
                         .label("默认请求头（逗号分隔）")
                         .col_span(2)
-                        .child(Input::new(&state.settings_headers).w_full()),
+                        .child(select_content_on_click(Input::new(&state.settings_headers).w_full()).w_full()),
                 )
                 .child(
                     field()
                         .label("信封 · 状态码字段")
-                        .child(Input::new(&state.settings_env_code).w_full()),
+                        .child(select_content_on_click(Input::new(&state.settings_env_code).w_full()).w_full()),
                 )
                 .child(
                     field()
                         .label("信封 · 消息字段")
-                        .child(Input::new(&state.settings_env_msg).w_full()),
+                        .child(select_content_on_click(Input::new(&state.settings_env_msg).w_full()).w_full()),
                 )
                 .child(
                     field()
                         .label("信封 · 数据字段")
                         .col_span(2)
-                        .child(Input::new(&state.settings_env_data).w_full()),
+                        .child(select_content_on_click(Input::new(&state.settings_env_data).w_full()).w_full()),
                 ),
         )
         .child(
@@ -681,7 +690,7 @@ fn sidebar(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElemen
                 .w_full()
                 .flex_shrink_0()
                 .gap_1()
-                .child(Input::new(&state.search).small().flex_1())
+                .child(select_content_on_click(Input::new(&state.search).small().w_full()).flex_1())
                 .child(
                     Button::new("new-ep-icon")
                         .primary()
@@ -830,7 +839,7 @@ fn editor(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement
                                 .text_color(cx.theme().muted_foreground)
                                 .child("接口名称"),
                         )
-                        .child(Input::new(&state.name).w_full()),
+                        .child(select_content_on_click(Input::new(&state.name).w_full()).w_full()),
                 )
                 .child(
                     Switch::new("ep-enabled")
@@ -874,7 +883,7 @@ fn editor(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement
                                 .w_full()
                                 .items_center()
                                 .gap_2()
-                                .child(Input::new(&state.path).flex_1().min_w_0())
+                                .child(select_content_on_click(Input::new(&state.path).w_full()).flex_1().min_w_0())
                                 .child(
                                     Button::new("copy-request-url")
                                         .small()
@@ -1205,7 +1214,9 @@ fn field_row(
                 .px_2()
                 .py_1()
                 .child(field_name_cell(&row.name, depth, cx))
-                .child(Input::new(&row.name_zh).small().flex_1().min_w_0())
+                .child(select_content_on_click(
+                    Input::new(&row.name_zh).small().w_full(),
+                ).flex_1().min_w_0())
                 .child(type_select_cell(&row.type_select))
                 .child(add_child_cell(
                     row.field.id.clone(),
@@ -1227,8 +1238,8 @@ fn field_row(
                 .gap_1()
                 .px_2()
                 .py_1()
-                .child(Input::new(&row.name).small().flex_1().min_w_0())
-                .child(Input::new(&row.name_zh).small().flex_1().min_w_0())
+                .child(select_content_on_click(Input::new(&row.name).small().w_full()).flex_1().min_w_0())
+                .child(select_content_on_click(Input::new(&row.name_zh).small().w_full()).flex_1().min_w_0())
                 .child(type_select_cell(&row.type_select))
                 .child(
                     Checkbox::new(SharedString::from(format!("req-{req_id}")))
@@ -1238,7 +1249,7 @@ fn field_row(
                             cx.notify();
                         })),
                 )
-                .child(Input::new(&row.comment).small().flex_1().min_w_0())
+                .child(select_content_on_click(Input::new(&row.comment).small().w_full()).flex_1().min_w_0())
                 .child(delete)
         }
     }
@@ -1248,7 +1259,7 @@ fn json_sheet(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoEle
     style::sheet(cx)
         .w_full()
         .overflow_hidden()
-        .child(Input::new(&state.json).h(px(220.)).w_full())
+            .child(select_content_on_click(Input::new(&state.json).w_full()).w_full())
         .when(state.json_invalid, |this| {
             this.child(
                 div()
@@ -2246,7 +2257,7 @@ fn field_name_cell(
                     .child("↳"),
             )
         })
-        .child(Input::new(name).small().flex_1().min_w_0())
+        .child(select_content_on_click(Input::new(name).small().w_full()).flex_1().min_w_0())
 }
 
 #[allow(dead_code)]
