@@ -3,3 +3,4 @@
 .DS_Store
 .playwright-mcp/
 *.png
+!docs/readme/*.png
