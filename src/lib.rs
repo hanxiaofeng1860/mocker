@@ -1,3 +1,4 @@
+pub mod doc_text;
 pub mod domain;
 pub mod import;
 pub mod llm;

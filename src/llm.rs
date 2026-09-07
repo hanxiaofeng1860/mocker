@@ -72,7 +72,7 @@ impl ModelClient for HttpModelClient {
     fn complete_json(&self, prompt: &str) -> Result<String, LlmError> {
         let protocol = self.protocol;
         let url = request_url(&self.base_url, protocol);
-        let model = self.model.clone();
+        let model = normalize_model_name(&self.model).to_string();
         let key = self.api_key()?;
         let prompt = prompt.to_string();
         // Sync trait, async reqwest: a nested Runtime::block_on panics inside tokio.
@@ -211,10 +211,12 @@ async fn send_complete(
         Protocol::AnthropicMessages => (
             builder
                 .header("x-api-key", key)
+                .header("Authorization", format!("Bearer {key}"))
                 .header("anthropic-version", "2023-06-01"),
             json!({
                 "model": model,
-                "max_tokens": 8192,
+                "max_tokens": 16384,
+                "thinking": { "type": "disabled" },
                 "messages": [{"role": "user", "content": prompt}]
             }),
         ),
@@ -317,45 +319,139 @@ fn parse_model_ids(v: &Value) -> Vec<String> {
     ids
 }
 
-fn extract_text(protocol: Protocol, text: &str) -> Result<String, LlmError> {
+fn extract_text(_protocol: Protocol, text: &str) -> Result<String, LlmError> {
     let v: Value =
         serde_json::from_str(text).map_err(|e| LlmError::Request(format!("响应不是 JSON: {e}")))?;
-    let content = match protocol {
-        Protocol::AnthropicMessages => anthropic_text(&v),
-        Protocol::OpenAIChat => openai_text(&v),
-    };
-    match content {
-        Some(s) if !s.trim().is_empty() => Ok(s),
-        _ => Err(LlmError::EmptyResponse),
+    if let Some(msg) = api_error_message(&v) {
+        return Err(LlmError::Request(msg));
     }
+    match collect_text(&v) {
+        Some(s) if !s.trim().is_empty() => Ok(s),
+        _ if has_thinking_only(&v) => Err(LlmError::Request(
+            "模型只返回了思考过程，没有 JSON 正文。请再点一次解析".into(),
+        )),
+        _ => Err(LlmError::Request(format!(
+            "模型返回空内容。响应: {}",
+            truncate(text, 400)
+        ))),
+    }
+}
+
+fn has_thinking_only(v: &Value) -> bool {
+    let Some(blocks) = v.get("content").and_then(Value::as_array) else {
+        return v
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(|c| c.get("message"))
+            .is_some_and(|m| {
+                m.get("reasoning_content")
+                    .or_else(|| m.get("reasoning"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.trim().is_empty())
+                    && collect_text(v).is_none()
+            });
+    };
+    let mut thinking = false;
+    let mut text = false;
+    for block in blocks {
+        let ty = block.get("type").and_then(Value::as_str).unwrap_or("");
+        if ty == "thinking" || block.get("thinking").is_some() {
+            thinking = true;
+        }
+        if block_text(block).is_some() {
+            text = true;
+        }
+    }
+    thinking && !text
+}
+
+fn api_error_message(v: &Value) -> Option<String> {
+    let err = v.get("error")?;
+    if let Some(msg) = err.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(msg.to_string());
+    }
+    err.get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn collect_text(v: &Value) -> Option<String> {
+    anthropic_text(v)
+        .or_else(|| openai_text(v))
+        .or_else(|| value_text(v.get("output_text")?))
 }
 
 fn anthropic_text(v: &Value) -> Option<String> {
-    let blocks = v.get("content")?.as_array()?;
+    let content = v.get("content")?;
+    if let Some(s) = content.as_str() {
+        return nonempty_text(s);
+    }
+    let blocks = content.as_array()?;
     let mut out = String::new();
     for block in blocks {
-        let is_text = block.get("type").and_then(Value::as_str).unwrap_or("text") == "text";
-        if is_text {
-            if let Some(t) = block.get("text").and_then(Value::as_str) {
-                out.push_str(t);
-            }
+        if let Some(t) = block_text(block) {
+            out.push_str(&t);
         }
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    nonempty_text(&out)
 }
 
 fn openai_text(v: &Value) -> Option<String> {
-    v.get("choices")?
-        .as_array()?
-        .first()?
-        .get("message")?
-        .get("content")?
-        .as_str()
-        .map(str::to_string)
+    let message = v.get("choices")?.as_array()?.first()?.get("message")?;
+    value_text(message.get("content")?)
+        .or_else(|| value_text(message.get("refusal")?))
+}
+
+fn value_text(v: &Value) -> Option<String> {
+    if v.is_null() {
+        return None;
+    }
+    if let Some(s) = v.as_str() {
+        return nonempty_text(s);
+    }
+    let arr = v.as_array()?;
+    let mut out = String::new();
+    for part in arr {
+        if let Some(t) = block_text(part).or_else(|| part.as_str().map(str::to_string)) {
+            out.push_str(&t);
+        }
+    }
+    nonempty_text(&out)
+}
+
+fn block_text(block: &Value) -> Option<String> {
+    if let Some(s) = block.as_str() {
+        return nonempty_text(s);
+    }
+    let ty = block.get("type").and_then(Value::as_str).unwrap_or("text");
+    if matches!(ty, "text" | "output_text" | "input_text") {
+        return block
+            .get("text")
+            .and_then(Value::as_str)
+            .and_then(nonempty_text);
+    }
+    None
+}
+
+fn nonempty_text(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+/// Claude Code 会给模型名加 `[1M]` 这类窗口标记，网关通常不认。
+fn normalize_model_name(model: &str) -> &str {
+    let trimmed = model.trim();
+    match trimmed.rsplit_once('[') {
+        Some((name, rest)) if rest.ends_with(']') && !name.is_empty() => name.trim_end(),
+        _ => trimmed,
+    }
 }
 
 fn read_json(path: &Path) -> Result<Value, LlmError> {
@@ -398,9 +494,84 @@ fn truncate(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{models_url, parse_model_ids};
+    use super::{extract_text, models_url, normalize_model_name, parse_model_ids};
+    use crate::llm::LlmError;
     use crate::sources::Protocol;
     use serde_json::json;
+
+    #[test]
+    fn normalize_model_name_strips_context_tag() {
+        assert_eq!(
+            normalize_model_name("claude-haiku-xsy[1M]"),
+            "claude-haiku-xsy"
+        );
+        assert_eq!(normalize_model_name("claude-haiku-xsy"), "claude-haiku-xsy");
+        assert_eq!(normalize_model_name("  grok-4.5  "), "grok-4.5");
+    }
+
+    #[test]
+    fn extract_anthropic_blocks_and_string_content() {
+        let blocks = json!({
+            "content": [
+                {"type": "thinking", "thinking": "x"},
+                {"type": "text", "text": "{\"ok\":true}"}
+            ]
+        })
+        .to_string();
+        assert_eq!(
+            extract_text(Protocol::AnthropicMessages, &blocks).unwrap(),
+            "{\"ok\":true}"
+        );
+        let as_string = json!({"content": "{\"ok\":true}"}).to_string();
+        assert_eq!(
+            extract_text(Protocol::AnthropicMessages, &as_string).unwrap(),
+            "{\"ok\":true}"
+        );
+    }
+
+    #[test]
+    fn extract_openai_shape_even_on_anthropic_protocol() {
+        let body = json!({
+            "choices": [{"message": {"content": "{\"ok\":true}"}}]
+        })
+        .to_string();
+        assert_eq!(
+            extract_text(Protocol::AnthropicMessages, &body).unwrap(),
+            "{\"ok\":true}"
+        );
+        let parts = json!({
+            "choices": [{"message": {"content": [{"type": "text", "text": "{\"ok\":true}"}]}}]
+        })
+        .to_string();
+        assert_eq!(
+            extract_text(Protocol::OpenAIChat, &parts).unwrap(),
+            "{\"ok\":true}"
+        );
+    }
+
+    #[test]
+    fn extract_thinking_only_is_clear_error() {
+        let body = json!({
+            "content": [{
+                "type": "thinking",
+                "signature": "",
+                "thinking": "先分析信封字段……"
+            }]
+        })
+        .to_string();
+        let err = extract_text(Protocol::AnthropicMessages, &body).unwrap_err();
+        assert!(
+            matches!(err, LlmError::Request(ref msg) if msg.contains("思考过程")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn extract_http200_error_object() {
+        let body = json!({"error": {"message": "Invalid model name"}}).to_string();
+        let err = extract_text(Protocol::AnthropicMessages, &body).unwrap_err();
+        assert!(matches!(err, LlmError::Request(msg) if msg.contains("Invalid model name")));
+    }
 
     #[test]
     fn models_url_openai_matches_chat_base() {

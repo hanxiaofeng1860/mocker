@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -5,15 +6,15 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    checkbox::Checkbox,
     dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputState},
     notification::Notification,
-    tag::Tag,
+    scroll::ScrollableElement as _,
     v_flex, ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, WindowExt as _,
 };
 
+use crate::doc_text;
 use crate::import::ImportDraft;
 use crate::service::AppService;
 use crate::sources::{home_dir, scan_sources};
@@ -41,7 +42,7 @@ impl ImportState {
                 InputState::new(window, cx)
                     .multi_line(true)
                     .rows(10)
-                    .placeholder("粘贴公司设计文档风格的接口说明")
+                    .placeholder("粘贴接口说明，或拖入 / 选择 txt、docx、pdf")
             }),
             drafts: Vec::new(),
             selected: Vec::new(),
@@ -62,8 +63,16 @@ pub(super) fn view(
     let can_write = commit_enabled(&state.drafts, &state.selected, &state.existing);
     let preview_id = state.ticket.load(Ordering::SeqCst);
     v_flex()
+        .id("import-page")
         .size_full()
         .gap_3()
+        .drag_over::<ExternalPaths>(|style, _, _, cx| {
+            style.bg(cx.theme().primary.opacity(0.08))
+        })
+        .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+            this.import_from_paths(paths.paths(), window, cx);
+            cx.notify();
+        }))
         .child(
             h_flex()
                 .flex_shrink_0()
@@ -91,12 +100,29 @@ pub(super) fn view(
                 .flex_shrink_0()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
+                .child("支持粘贴文字，或拖入 / 选择 .txt .md .docx .pdf（扫描件请先复制正文）。"),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
                 .child(source_caption(service)),
         )
         .child(
             h_flex()
                 .flex_shrink_0()
                 .gap_2()
+                .child(
+                    Button::new("import-pick-file")
+                        .small()
+                        .label("选择文件")
+                        .disabled(parsing)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.pick_import_files(window, cx);
+                            cx.notify();
+                        })),
+                )
                 .child(
                     Button::new("import-parse")
                         .primary()
@@ -168,10 +194,14 @@ pub(super) fn view(
             ))
         })
         .when(!state.drafts.is_empty(), |this| {
-            this.child(div().flex_1().min_h_0().child(style::appear(
-                format!("import-preview-{preview_id}"),
-                preview_table(state, cx),
-            )))
+            this.child(
+                div()
+                    .id(SharedString::from(format!("import-preview-{preview_id}")))
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(preview_table(state, cx)),
+            )
         })
         .into_any_element()
 }
@@ -179,11 +209,14 @@ pub(super) fn view(
 fn preview_table(state: &ImportState, cx: &mut Context<AppView>) -> impl IntoElement {
     style::card(cx)
         .w_full()
+        .h_full()
         .flex_1()
         .min_h_0()
+        .overflow_hidden()
         .child(
             h_flex()
                 .w_full()
+                .flex_shrink_0()
                 .px_3()
                 .py_2()
                 .gap_3()
@@ -196,12 +229,20 @@ fn preview_table(state: &ImportState, cx: &mut Context<AppView>) -> impl IntoEle
                 .child(div().flex_1().child("路径"))
                 .child(div().w(px(160.)).child("名称")),
         )
-        .children(
-            state
-                .drafts
-                .iter()
-                .enumerate()
-                .map(|(i, draft)| preview_row(i, draft, state, cx)),
+        .child(
+            v_flex()
+                .id("import-preview-list")
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .overflow_y_scrollbar()
+                .children(
+                    state
+                        .drafts
+                        .iter()
+                        .enumerate()
+                        .map(|(i, draft)| preview_row(i, draft, state, cx)),
+                ),
         )
 }
 
@@ -220,6 +261,7 @@ fn preview_row(
         draft.name.clone()
     };
     h_flex()
+        .id(SharedString::from(format!("import-row-wrap-{index}")))
         .w_full()
         .px_3()
         .py_2()
@@ -228,15 +270,20 @@ fn preview_row(
         .border_b_1()
         .border_color(cx.theme().border)
         .when(marked, |this| this.bg(cx.theme().danger.opacity(0.08)))
+        .when(!marked, |this| style::selected_row(this, checked, cx))
         .child(
-            Checkbox::new(SharedString::from(format!("import-row-{index}")))
-                .checked(checked)
-                .on_click(cx.listener(move |this, checked, _, cx| {
-                    this.toggle_import_row(index, *checked);
+            div()
+                .id(SharedString::from(format!("import-row-{index}")))
+                .w(px(28.))
+                .flex_shrink_0()
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_import_row(index, !checked);
                     cx.notify();
-                })),
+                }))
+                .child(style::checkbox_mark(checked, cx)),
         )
-        .child(div().w(px(72.)).child(method_badge(&draft.method)))
+        .child(div().w(px(72.)).child(style::method_badge(&draft.method, cx)))
         .child(
             div()
                 .flex_1()
@@ -257,16 +304,6 @@ fn preview_row(
                     this.child(div().text_xs().text_color(cx.theme().danger).child(issue))
                 }),
         )
-}
-
-fn method_badge(method: &str) -> impl IntoElement {
-    let tag = match method.to_ascii_uppercase().as_str() {
-        "GET" => Tag::success(),
-        "DELETE" => Tag::danger(),
-        "PUT" | "PATCH" => Tag::warning(),
-        _ => Tag::info(),
-    };
-    tag.small().child(method.to_ascii_uppercase())
 }
 
 fn source_caption(service: &AppService) -> String {
@@ -425,7 +462,7 @@ impl AppView {
         let paste = state.paste.read(cx).value().to_string();
         if paste.trim().is_empty() {
             if let Some(state) = self.import.as_mut() {
-                state.error = Some("请先粘贴接口说明".into());
+                state.error = Some("请先粘贴接口说明或导入文档".into());
             }
             return;
         }
@@ -495,6 +532,79 @@ impl AppView {
                         state.parsing = false;
                         state.drafts.clear();
                         state.selected.clear();
+                        state.error = Some(err.to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn pick_import_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.import.as_ref().is_none_or(|s| s.parsing) {
+            return;
+        }
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("选择".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            match rx.await {
+                Ok(Ok(Some(paths))) => {
+                    this.update_in(cx, |view, window, cx| {
+                        view.import_from_paths(&paths, window, cx);
+                    })
+                    .ok();
+                }
+                Ok(Err(err)) => {
+                    this.update_in(cx, |view, _, cx| {
+                        if let Some(state) = view.import.as_mut() {
+                            state.error = Some(err.to_string());
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                _ => {}
+            }
+        })
+        .detach();
+    }
+
+    fn import_from_paths(
+        &mut self,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if paths.is_empty() {
+            return;
+        }
+        if self.import.as_ref().is_none_or(|s| s.parsing) {
+            return;
+        }
+        let paths = paths.to_vec();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { doc_text::extract_paths(&paths) })
+                .await;
+            this.update_in(cx, |view, window, cx| {
+                let Some(state) = view.import.as_mut() else {
+                    return;
+                };
+                match result {
+                    Ok(text) => {
+                        state.error = None;
+                        state.paste.update(cx, |input, cx| {
+                            input.set_value(text, window, cx);
+                        });
+                        window.push_notification(Notification::success("已读入文档，确认后点解析"), cx);
+                    }
+                    Err(err) => {
                         state.error = Some(err.to_string());
                     }
                 }

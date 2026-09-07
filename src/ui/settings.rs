@@ -10,8 +10,8 @@ use gpui_component::{
     radio::{Radio, RadioGroup},
     select::{SearchableVec, Select, SelectEvent, SelectState},
     tag::Tag,
-    v_flex, ActiveTheme as _, Disableable as _, IndexPath, Selectable as _, Sizable as _,
-    StyledExt as _, WindowExt as _,
+    v_flex, ActiveTheme as _, Disableable as _, IndexPath, Sizable as _, StyledExt as _,
+    WindowExt as _,
 };
 
 use crate::domain::{GlobalSettings, ManualSource};
@@ -301,8 +301,8 @@ pub(super) fn view(state: &SettingsState, cx: &mut Context<AppView>) -> AnyEleme
                         .child(
                             Button::new("theme-paper")
                                 .small()
-                                .label("Paper")
-                                .selected(!is_dark)
+                                .label(style::selected_caption(!is_dark, "Paper"))
+                                .when(!is_dark, |this| this.primary())
                                 .on_click(cx.listener(|_, _, _, cx| {
                                     apply_paper_theme(cx);
                                     cx.notify();
@@ -311,8 +311,8 @@ pub(super) fn view(state: &SettingsState, cx: &mut Context<AppView>) -> AnyEleme
                         .child(
                             Button::new("theme-ink")
                                 .small()
-                                .label("Ink")
-                                .selected(is_dark)
+                                .label(style::selected_caption(is_dark, "Ink"))
+                                .when(is_dark, |this| this.primary())
                                 .on_click(cx.listener(|_, _, _, cx| {
                                     apply_ink_theme(cx);
                                     cx.notify();
@@ -335,47 +335,46 @@ fn source_row(source: &ModelSource, selected: &str, cx: &mut Context<AppView>) -
     let subtitle = source_subtitle(source);
     let label = source.label.clone();
 
-    h_flex()
-        .id(SharedString::from(format!("src-row-{id}")))
-        .w_full()
-        .gap_2()
-        .items_center()
-        .p_3()
-        .mb_1()
-        .rounded(cx.theme().radius_lg)
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().popover)
-        .shadow(style::paper_shadow(cx))
+    style::selected_card(
+        h_flex()
+            .id(SharedString::from(format!("src-row-{id}")))
+            .w_full()
+            .gap_2()
+            .items_center()
+            .p_3()
+            .mb_1()
+            .rounded(cx.theme().radius_lg),
+        checked,
+        cx,
+    )
         .when(!available, |this| this.opacity(0.55))
         .child(
-            Radio::new(SharedString::from(format!("src-{id}")))
+            h_flex()
+                .id(SharedString::from(format!("src-{id}")))
                 .flex_1()
-                .checked(checked)
-                .disabled(!available)
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.select_source(id.clone(), window, cx);
-                    cx.notify();
-                }))
+                .gap_2()
+                .items_center()
+                .cursor_pointer()
+                .when(available, |this| {
+                    this.on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_source(id.clone(), window, cx);
+                        cx.notify();
+                    }))
+                })
+                .child(style::checkbox_mark(checked, cx))
                 .child(
-                    h_flex()
-                        .w_full()
-                        .items_center()
-                        .gap_2()
+                    v_flex()
+                        .flex_1()
+                        .child(div().font_semibold().child(label))
                         .child(
-                            v_flex()
-                                .flex_1()
-                                .child(div().font_semibold().child(label))
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .font_family(cx.theme().mono_font_family.clone())
-                                        .child(subtitle),
-                                ),
-                        )
-                        .child(badge),
-                ),
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(subtitle),
+                        ),
+                )
+                .child(badge),
         )
         .into_any_element()
 }
@@ -404,45 +403,43 @@ fn manual_source_row(
     } else {
         source.name.clone()
     };
-    h_flex()
-        .id(SharedString::from(format!("src-row-{id}")))
-        .w_full()
-        .gap_2()
-        .items_center()
-        .p_3()
-        .mb_1()
-        .rounded(cx.theme().radius_lg)
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().popover)
-        .shadow(style::paper_shadow(cx))
+    style::selected_card(
+        h_flex()
+            .id(SharedString::from(format!("src-row-{id}")))
+            .w_full()
+            .gap_2()
+            .items_center()
+            .p_3()
+            .mb_1()
+            .rounded(cx.theme().radius_lg),
+        checked,
+        cx,
+    )
         .child(
-            Radio::new(SharedString::from(format!("src-{id}")))
+            h_flex()
+                .id(SharedString::from(format!("src-{id}")))
                 .flex_1()
-                .checked(checked)
+                .gap_2()
+                .items_center()
+                .cursor_pointer()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.select_source(id.clone(), window, cx);
                     cx.notify();
                 }))
+                .child(style::checkbox_mark(checked, cx))
                 .child(
-                    h_flex()
-                        .w_full()
-                        .items_center()
-                        .gap_2()
+                    v_flex()
+                        .flex_1()
+                        .child(div().font_semibold().child(name))
                         .child(
-                            v_flex()
-                                .flex_1()
-                                .child(div().font_semibold().child(name))
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .font_family(cx.theme().mono_font_family.clone())
-                                        .child(subtitle),
-                                ),
-                        )
-                        .child(Tag::success().small().child("可用")),
-                ),
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(subtitle),
+                        ),
+                )
+                .child(Tag::success().small().child("可用")),
         )
         .child(
             Button::new(SharedString::from(format!("edit-manual-{edit_id}")))

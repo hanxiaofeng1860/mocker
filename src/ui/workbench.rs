@@ -4,7 +4,6 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    checkbox::Checkbox,
     dialog::DialogButtonProps,
     form::{field, v_form},
     h_flex,
@@ -15,8 +14,8 @@ use gpui_component::{
     select::{SearchableVec, Select, SelectEvent, SelectState},
     switch::Switch,
     tag::Tag,
-    v_flex, ActiveTheme as _, Colorize as _, Disableable as _, IndexPath, Selectable as _,
-    Sizable as _, StyledExt as _, WindowExt as _,
+    v_flex, ActiveTheme as _, Disableable as _, IndexPath, Sizable as _, StyledExt as _,
+    WindowExt as _,
 };
 
 use crate::domain::{
@@ -557,8 +556,8 @@ fn top_bar(state: &WorkbenchState, running: bool, cx: &mut Context<AppView>) -> 
         .child(
             Button::new("work-project-settings")
                 .small()
-                .label("项目设置")
-                .selected(state.show_settings)
+                .label(style::selected_caption(state.show_settings, "项目设置"))
+                .when(state.show_settings, |this| this.primary())
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.toggle_project_settings(window, cx);
                     cx.notify();
@@ -683,6 +682,7 @@ fn sidebar(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElemen
         .min_w(px(240.))
         .h_full()
         .min_h_0()
+        .overflow_hidden()
         .gap_2()
         .p_3()
         .child(
@@ -709,8 +709,8 @@ fn sidebar(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElemen
                 .flex_1()
                 .min_h_0()
                 .w_full()
-                .overflow_y_scrollbar()
-                .gap(px(10.))
+                .overflow_y_scroll()
+                .gap_2()
                 .children(
                     items
                         .into_iter()
@@ -737,84 +737,57 @@ fn endpoint_row(
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let id = ep.id.clone();
-    let wrap_id = id.clone();
     let menu_id = id.clone();
     let view = cx.entity().downgrade();
     let on = selected == Some(ep.id.as_str());
     let tail = path_tail(&ep.path).to_string();
-    let row = h_flex()
-        .id(SharedString::from(format!("ep-row-{id}")))
-        .w_full()
-        .gap_2()
-        .items_start()
-        .px_3()
-        .py_2()
-        .rounded(cx.theme().radius)
-        .cursor_pointer()
-        .border_1()
-        .border_color(if on {
-            cx.theme().primary.opacity(0.40)
-        } else {
-            cx.theme().transparent
-        })
-        .bg(if on {
-            cx.theme().popover
-        } else {
-            cx.theme().transparent
-        })
-        .when(on, |this| this.shadow(style::paper_shadow(cx)))
-        .when(!on, |this| this.hover(|s| s.bg(cx.theme().muted)))
-        .child(method_badge(&ep.method, cx))
-        .child(
-            v_flex()
-                .min_w_0()
-                .child(
-                    div()
-                        .when(on, |this| this.font_medium())
-                        .child(ep.name.clone()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .child(tail),
-                ),
-        )
-        .on_click(cx.listener(move |this, _, window, cx| {
-            this.select_work_endpoint(id.clone(), window, cx);
-            cx.notify();
+    style::selected_nav(
+        v_flex()
+            .id(SharedString::from(format!("ep-row-{id}")))
+            .w_full()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .rounded(cx.theme().radius)
+            .cursor_pointer(),
+        on,
+        cx,
+    )
+    .child(
+        h_flex()
+            .w_full()
+            .gap_2()
+            .items_center()
+            .child(style::method_badge(&ep.method, cx))
+            .child(
+                div()
+                    .flex_1()
+                    .when(on, |this| this.font_medium())
+                    .child(ep.name.clone()),
+            ),
+    )
+    .child(
+        div()
+            .w_full()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .font_family(cx.theme().mono_font_family.clone())
+            .child(tail),
+    )
+    .on_click(cx.listener(move |this, _, window, cx| {
+        this.select_work_endpoint(id.clone(), window, cx);
+        cx.notify();
+    }))
+    .context_menu(move |menu, _, _| {
+        let view = view.clone();
+        let menu_id = menu_id.clone();
+        menu.item(PopupMenuItem::new("删除").on_click(move |_, window, cx| {
+            let _ = view.update(cx, |this, cx| {
+                this.delete_work_endpoint(menu_id.clone(), window, cx);
+                cx.notify();
+            });
         }))
-        .context_menu(move |menu, _, _| {
-            let view = view.clone();
-            let menu_id = menu_id.clone();
-            menu.item(PopupMenuItem::new("删除").on_click(move |_, window, cx| {
-                let _ = view.update(cx, |this, cx| {
-                    this.delete_work_endpoint(menu_id.clone(), window, cx);
-                    cx.notify();
-                });
-            }))
-        });
-    div()
-        .id(SharedString::from(format!("ep-wrap-{wrap_id}")))
-        .w_full()
-        .mt(px(6.))
-        .mb(px(6.))
-        .child(row)
-}
-
-fn method_badge(method: &str, cx: &App) -> impl IntoElement {
-    let label = method.to_ascii_uppercase();
-    let ink = match label.as_str() {
-        "GET" => cx.theme().primary,
-        "DELETE" => cx.theme().accent,
-        "PUT" | "PATCH" => cx.theme().accent.mix(cx.theme().primary, 0.45),
-        _ => cx.theme().foreground,
-    };
-    Tag::custom(ink.opacity(0.12), ink, ink.opacity(0.22))
-        .small()
-        .rounded(px(6.))
-        .child(label)
+    })
 }
 
 fn editor(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -983,8 +956,8 @@ fn scene_chips(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoEl
                 let on = state.current_scene == kind;
                 Button::new(SharedString::from(format!("scene-{}", kind.as_str())))
                     .small()
-                    .label(scene_label(kind))
-                    .selected(on)
+                    .label(style::selected_caption(on, scene_label(kind)))
+                    .when(on, |this| this.primary())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.set_work_scene(kind, window, cx);
                         cx.notify();
@@ -1162,8 +1135,8 @@ fn data_kind_toggle(kind: DataKind, cx: &mut Context<AppView>) -> impl IntoEleme
         .child(
             Button::new("data-kind-object")
                 .small()
-                .label("对象")
-                .selected(kind == DataKind::Object)
+                .label(style::selected_caption(kind == DataKind::Object, "对象"))
+                .when(kind == DataKind::Object, |this| this.primary())
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.set_work_data_kind(DataKind::Object, window, cx);
                     cx.notify();
@@ -1172,8 +1145,8 @@ fn data_kind_toggle(kind: DataKind, cx: &mut Context<AppView>) -> impl IntoEleme
         .child(
             Button::new("data-kind-array")
                 .small()
-                .label("数组")
-                .selected(kind == DataKind::Array)
+                .label(style::selected_caption(kind == DataKind::Array, "数组"))
+                .when(kind == DataKind::Array, |this| this.primary())
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.set_work_data_kind(DataKind::Array, window, cx);
                     cx.notify();
@@ -1242,12 +1215,17 @@ fn field_row(
                 .child(select_content_on_click(Input::new(&row.name_zh).small().w_full()).flex_1().min_w_0())
                 .child(type_select_cell(&row.type_select))
                 .child(
-                    Checkbox::new(SharedString::from(format!("req-{req_id}")))
-                        .checked(required)
-                        .on_click(cx.listener(move |this, checked, window, cx| {
-                            this.set_work_field_required(req_id.clone(), *checked, window, cx);
-                            cx.notify();
-                        })),
+                    div()
+                        .id(SharedString::from(format!("req-{req_id}")))
+                        .cursor_pointer()
+                        .on_click(cx.listener({
+                            let req_id = req_id.clone();
+                            move |this, _, window, cx| {
+                                this.set_work_field_required(req_id.clone(), !required, window, cx);
+                                cx.notify();
+                            }
+                        }))
+                        .child(style::checkbox_mark(required, cx)),
                 )
                 .child(select_content_on_click(Input::new(&row.comment).small().w_full()).flex_1().min_w_0())
                 .child(delete)

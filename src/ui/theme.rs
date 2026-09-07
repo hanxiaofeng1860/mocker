@@ -57,7 +57,7 @@ pub fn apply_paper_theme(cx: &mut App) {
     theme.ring = primary;
     theme.list = background;
     theme.list_hover = muted;
-    theme.list_active = primary.opacity(0.16);
+    theme.list_active = primary.opacity(0.22);
     theme.list_even = background;
     theme.danger = accent;
     theme.danger_hover = accent.darken(0.08);
@@ -69,7 +69,7 @@ pub fn apply_paper_theme(cx: &mut App) {
     theme.secondary = popover;
     theme.secondary_foreground = foreground;
     theme.secondary_hover = muted;
-    theme.secondary_active = muted.darken(0.06);
+    theme.secondary_active = primary.opacity(0.22);
     theme.radius = px(8.);
     theme.radius_lg = px(12.);
     theme.shadow = true;
@@ -103,7 +103,7 @@ pub fn apply_ink_theme(cx: &mut App) {
     theme.ring = primary;
     theme.list = background;
     theme.list_hover = muted;
-    theme.list_active = primary.opacity(0.24);
+    theme.list_active = primary.opacity(0.32);
     theme.list_even = background;
     theme.danger = accent;
     theme.danger_hover = accent.lighten(0.08);
@@ -115,7 +115,7 @@ pub fn apply_ink_theme(cx: &mut App) {
     theme.secondary = popover;
     theme.secondary_foreground = foreground;
     theme.secondary_hover = muted;
-    theme.secondary_active = muted.lighten(0.06);
+    theme.secondary_active = primary.opacity(0.32);
     theme.radius = px(8.);
     theme.radius_lg = px(12.);
     theme.shadow = true;
