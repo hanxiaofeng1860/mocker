@@ -274,11 +274,11 @@ fn source_caption(service: &AppService) -> String {
     if settings.selected_source_id.is_empty() {
         return "尚未选择模型来源，解析前请先到设置里选择。".into();
     }
-    if settings.selected_source_id == "manual" {
-        let name = if settings.manual_model.trim().is_empty() {
+    if let Some(manual) = settings.find_manual(&settings.selected_source_id) {
+        let name = if manual.name.trim().is_empty() {
             "手动填写"
         } else {
-            settings.manual_model.trim()
+            manual.name.trim()
         };
         return format!("将使用设置里的模型来源（当前 {name}）。");
     }

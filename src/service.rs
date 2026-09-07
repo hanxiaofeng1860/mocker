@@ -4,14 +4,17 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use anyhow::{anyhow, Result};
 
 use crate::domain::{
-    Endpoint, Field, FieldLoc, GlobalSettings, HeaderKv, Project, RequestLog, Scene, SceneKind,
+    Endpoint, Envelope, Field, FieldLoc, GlobalSettings, HeaderKv, Project, RequestLog, Scene,
+    SceneKind,
 };
 use crate::import::{
     attach_scenes, import_prompt, strip_markdown_fences, validate_import, ImportDraft,
 };
 use crate::llm::ModelClient;
 use crate::runtime::RuntimeHub;
-use crate::scenes::{default_success_envelope, generate_non_success, scene_http_status};
+use crate::scenes::{
+    default_success_envelope, generate_non_success, relabel_envelope, scene_http_status,
+};
 use crate::store::{self, Store};
 use serde_json::{json, Map, Value};
 
@@ -77,8 +80,41 @@ impl AppService {
 
     pub fn save_project(&self, project: Project) -> Result<()> {
         let id = project.id.clone();
+        let old_envelope = lock(&self.store)?.get_project(&id)?.map(|p| p.envelope);
         lock(&self.store)?.upsert_project(&project)?;
+        if let Some(old) = old_envelope {
+            let old = old.sanitized();
+            let new = project.envelope.sanitized();
+            if old != new {
+                self.relabel_project_scenes(&id, &old, &new)?;
+            }
+        }
         self.runtime.refresh(&id)
+    }
+
+    fn relabel_project_scenes(
+        &self,
+        project_id: &str,
+        old: &Envelope,
+        new: &Envelope,
+    ) -> Result<()> {
+        let store = lock(&self.store)?;
+        for ep in store.list_endpoints(project_id)? {
+            for kind in SceneKind::all() {
+                let Some(mut scene) = store.get_scene(&ep.id, kind)? else {
+                    continue;
+                };
+                let Ok(body) = serde_json::from_str::<Value>(&scene.body_json) else {
+                    continue;
+                };
+                let next = relabel_envelope(&body, old, new);
+                if next != body {
+                    scene.body_json = pretty_json(&next);
+                    store.upsert_scene(&scene)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn clear_logs(&self, project_id: &str) -> Result<()> {
@@ -100,6 +136,7 @@ impl AppService {
             success_code: success_code.to_string(),
             fail_code: fail_code.to_string(),
             default_headers: headers,
+            envelope: Envelope::default(),
         };
         lock(&self.store)?.upsert_project(&project)?;
         Ok(project)
@@ -155,7 +192,7 @@ impl AppService {
             enabled: true,
             current_scene: SceneKind::Success,
         };
-        let success = default_success_envelope(&project.success_code);
+        let success = default_success_envelope(&project.success_code, &project.envelope);
         {
             let store = lock(&self.store)?;
             store.upsert_endpoint(&endpoint).map_err(map_unique)?;
@@ -169,6 +206,7 @@ impl AppService {
                         &project.success_code,
                         &project.fail_code,
                         &success,
+                        &project.envelope,
                     )),
                 })?;
             }
@@ -245,7 +283,12 @@ impl AppService {
                 .ok_or_else(|| anyhow!("project not found: {project_id}"))?;
             for draft in drafts {
                 let endpoint_id = store::new_id();
-                let scenes = attach_scenes(&draft, &project.success_code, &project.fail_code);
+                let scenes = attach_scenes(
+                    &draft,
+                    &project.success_code,
+                    &project.fail_code,
+                    &project.envelope,
+                );
                 store.upsert_endpoint(&Endpoint {
                     id: endpoint_id.clone(),
                     project_id: project_id.to_string(),
@@ -296,16 +339,21 @@ impl AppService {
             let success_body = store
                 .get_scene(endpoint_id, SceneKind::Success)?
                 .and_then(|s| serde_json::from_str(&s.body_json).ok())
-                .unwrap_or_else(|| default_success_envelope(&project.success_code));
+                .unwrap_or_else(|| {
+                    default_success_envelope(&project.success_code, &project.envelope)
+                });
             (project, fields, success_body)
         };
         let body = match kind {
-            SceneKind::Success => success_from_fields(&project.success_code, &fields),
+            SceneKind::Success => {
+                success_from_fields(&project.success_code, &fields, &project.envelope)
+            }
             other => generate_non_success(
                 other,
                 &project.success_code,
                 &project.fail_code,
                 &success_body,
+                &project.envelope,
             ),
         };
         self.save_scene_body(endpoint_id, kind, pretty_json(&body))
@@ -318,14 +366,14 @@ fn parse_import(
     project_id: &str,
     paste: &str,
 ) -> Result<Vec<ImportDraft>> {
-    let (success_code, fail_code) = {
+    let (success_code, fail_code, envelope) = {
         let store = lock(store)?;
         let project = store
             .get_project(project_id)?
             .ok_or_else(|| anyhow!("project not found: {project_id}"))?;
-        (project.success_code, project.fail_code)
+        (project.success_code, project.fail_code, project.envelope)
     };
-    let prompt = import_prompt(paste, &success_code, &fail_code);
+    let prompt = import_prompt(paste, &success_code, &fail_code, &envelope);
     let raw = lock(model)?.complete_json(&prompt)?;
     Ok(validate_import(&raw)?)
 }
@@ -370,7 +418,11 @@ pub(crate) fn parse_generated_success(raw: &str) -> Result<Value> {
     serde_json::from_str(stripped).map_err(|e| anyhow!("模型输出无法解析为 JSON: {e}"))
 }
 
-pub(crate) fn success_from_fields(success_code: &str, fields: &[Field]) -> Value {
+pub(crate) fn success_from_fields(
+    success_code: &str,
+    fields: &[Field],
+    envelope: &Envelope,
+) -> Value {
     let mut data = Map::new();
     for field in fields {
         if field.location != FieldLoc::Response || field.parent_id.is_some() {
@@ -382,11 +434,11 @@ pub(crate) fn success_from_fields(success_code: &str, fields: &[Field]) -> Value
         }
         data.insert(name.to_string(), sample_value(&field.type_name));
     }
-    json!({
-        "code": crate::scenes::encode_code(success_code),
-        "msg": "成功",
-        "data": Value::Object(data),
-    })
+    envelope.pack(
+        crate::scenes::encode_code(success_code),
+        "成功",
+        Value::Object(data),
+    )
 }
 
 fn sample_value(type_name: &str) -> Value {

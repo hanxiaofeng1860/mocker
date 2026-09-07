@@ -8,7 +8,7 @@ use gpui_component::{
     v_flex, Sizable as _, StyledExt as _, WindowExt as _,
 };
 
-use crate::domain::HeaderKv;
+use crate::domain::{Envelope, HeaderKv};
 
 use super::app::AppView;
 use super::style;
@@ -19,6 +19,9 @@ pub(super) struct NewProjectForm {
     success_code: Entity<InputState>,
     fail_code: Entity<InputState>,
     header_key: Entity<InputState>,
+    envelope_code: Entity<InputState>,
+    envelope_msg: Entity<InputState>,
+    envelope_data: Entity<InputState>,
 }
 
 impl NewProjectForm {
@@ -29,6 +32,21 @@ impl NewProjectForm {
             success_code: cx.new(|cx| InputState::new(window, cx).default_value("0000")),
             fail_code: cx.new(|cx| InputState::new(window, cx).default_value("9999")),
             header_key: cx.new(|cx| InputState::new(window, cx).placeholder("sn")),
+            envelope_code: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("code")
+                    .default_value("code")
+            }),
+            envelope_msg: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("msg")
+                    .default_value("msg")
+            }),
+            envelope_data: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("data")
+                    .default_value("data")
+            }),
         }
     }
 }
@@ -87,6 +105,22 @@ pub(super) fn view(form: &NewProjectForm, cx: &mut Context<AppView>) -> AnyEleme
                                 .label("默认请求头（可选，如 sn）")
                                 .col_span(2)
                                 .child(Input::new(&form.header_key).w_full()),
+                        )
+                        .child(
+                            field()
+                                .label("信封 · 状态码字段")
+                                .child(Input::new(&form.envelope_code).w_full()),
+                        )
+                        .child(
+                            field()
+                                .label("信封 · 消息字段")
+                                .child(Input::new(&form.envelope_msg).w_full()),
+                        )
+                        .child(
+                            field()
+                                .label("信封 · 数据字段")
+                                .col_span(2)
+                                .child(Input::new(&form.envelope_data).w_full()),
                         ),
                 )
                 .child(
@@ -126,6 +160,12 @@ impl AppView {
         let success = form.success_code.read(cx).value();
         let fail = form.fail_code.read(cx).value();
         let header = form.header_key.read(cx).value();
+        let envelope = Envelope {
+            code_key: form.envelope_code.read(cx).value().to_string(),
+            msg_key: form.envelope_msg.read(cx).value().to_string(),
+            data_key: form.envelope_data.read(cx).value().to_string(),
+        }
+        .sanitized();
 
         let Some(port) = parse_port(port_raw.as_str()) else {
             window.push_notification(Notification::error("端口无效"), cx);
@@ -146,7 +186,14 @@ impl AppView {
             .service
             .create_project(name.trim(), port, &success, &fail, headers)
         {
-            Ok(project) => self.open_work(project.id),
+            Ok(mut project) => {
+                project.envelope = envelope;
+                if let Err(err) = self.service.save_project(project.clone()) {
+                    window.push_notification(Notification::error(err.to_string()), cx);
+                    return;
+                }
+                self.open_work(project.id);
+            }
             Err(err) => {
                 window.push_notification(Notification::error(err.to_string()), cx);
             }

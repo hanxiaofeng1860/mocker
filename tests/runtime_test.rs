@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use mocker::domain::{Endpoint, HeaderKv, Project, Scene, SceneKind};
+use mocker::domain::{Endpoint, Envelope, HeaderKv, Project, Scene, SceneKind};
 use mocker::runtime::RuntimeHub;
 use mocker::scenes::encode_code;
 use mocker::store::{self, Store};
@@ -36,6 +36,7 @@ impl Harness {
                 key: "sn".into(),
                 value: "device".into(),
             }],
+            envelope: Envelope::default(),
         };
         let endpoint = Endpoint {
             id: store::new_id(),
@@ -161,6 +162,35 @@ async fn unknown_path_returns_404_envelope_with_fail_code() {
 }
 
 #[tokio::test]
+async fn unknown_path_uses_project_envelope_keys() {
+    let h = Harness::new();
+    {
+        let db = h.store.lock().unwrap();
+        let mut project = db.get_project(&h.project_id).unwrap().unwrap();
+        project.envelope = Envelope {
+            code_key: "errno".into(),
+            msg_key: "message".into(),
+            data_key: "result".into(),
+        };
+        db.upsert_project(&project).unwrap();
+    }
+    h.hub.refresh(&h.project_id).unwrap();
+    let resp = reqwest::Client::new()
+        .post(h.url("/no/such"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["errno"], encode_code("9999"));
+    assert_eq!(body["message"], "未找到 mock 接口");
+    assert_eq!(body["result"], Value::Null);
+    assert!(body.get("code").is_none());
+    assert!(body.get("msg").is_none());
+    assert!(body.get("data").is_none());
+}
+
+#[tokio::test]
 async fn get_on_post_path_returns_405() {
     let h = Harness::new();
     let resp = reqwest::Client::new()
@@ -235,6 +265,7 @@ async fn start_fails_when_port_occupied() {
         success_code: "0000".into(),
         fail_code: "9999".into(),
         default_headers: Vec::new(),
+        envelope: Envelope::default(),
     };
     store.lock().unwrap().upsert_project(&project).unwrap();
 

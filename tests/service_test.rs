@@ -1,6 +1,8 @@
 use std::sync::{Arc, Mutex};
 
-use mocker::domain::{Endpoint, Field, FieldLoc, GlobalSettings, RequestLog, SceneKind};
+use mocker::domain::{
+    Endpoint, Envelope, Field, FieldLoc, GlobalSettings, ManualSource, RequestLog, SceneKind,
+};
 use mocker::llm::{LlmError, ModelClient};
 use mocker::service::AppService;
 use mocker::store::{self, Store};
@@ -202,18 +204,22 @@ fn import_paste_then_commit_writes_endpoints_fields_scenes_and_source_text() {
 fn load_save_settings_round_trip() {
     let (_dir, _, svc) = new_service(Noop);
     let settings = GlobalSettings {
-        selected_source_id: "manual".into(),
+        selected_source_id: "manual-1".into(),
         selected_model: "gpt".into(),
-        manual_base_url: "http://127.0.0.1:1".into(),
-        manual_api_key: "sk-test".into(),
-        manual_protocol: "openai-chat".into(),
-        manual_model: "gpt".into(),
+        manual_sources: vec![ManualSource {
+            id: "manual-1".into(),
+            name: "测试".into(),
+            base_url: "http://127.0.0.1:1".into(),
+            api_key: "sk-test".into(),
+            protocol: "openai-chat".into(),
+            model: "gpt".into(),
+        }],
     };
     svc.save_settings(&settings).unwrap();
     let loaded = svc.load_settings().unwrap();
-    assert_eq!(loaded.selected_source_id, "manual");
-    assert_eq!(loaded.manual_api_key, "sk-test");
-    assert_eq!(loaded.manual_protocol, "openai-chat");
+    assert_eq!(loaded.selected_source_id, "manual-1");
+    assert_eq!(loaded.manual_sources[0].api_key, "sk-test");
+    assert_eq!(loaded.manual_sources[0].protocol, "openai-chat");
 }
 
 #[test]
@@ -380,4 +386,55 @@ fn clear_logs_via_service() {
     assert_eq!(svc.logs(&project.id).unwrap().len(), 1);
     svc.clear_logs(&project.id).unwrap();
     assert!(svc.logs(&project.id).unwrap().is_empty());
+}
+
+#[test]
+fn save_project_relabels_all_endpoint_scene_envelopes() {
+    let (_dir, _, svc) = new_service(Noop);
+    let mut project = svc
+        .create_project("phone", 19100, "0000", "9999", Vec::new())
+        .unwrap();
+    let ep1 = svc.create_endpoint(&project.id).unwrap();
+    let ep2 = svc.create_endpoint(&project.id).unwrap();
+    svc.apply_generated_success(
+        &ep1.id,
+        r#"{"code":"0000","msg":"成功","data":{"city":"杭州"}}"#,
+    )
+    .unwrap();
+
+    project.envelope = Envelope {
+        code_key: "errno".into(),
+        msg_key: "errmsg".into(),
+        data_key: "result".into(),
+    };
+    svc.save_project(project).unwrap();
+
+    let success: Value = serde_json::from_str(
+        &svc.get_scene(&ep1.id, SceneKind::Success)
+            .unwrap()
+            .unwrap()
+            .body_json,
+    )
+    .unwrap();
+    assert_eq!(success["errno"], "0000");
+    assert_eq!(success["errmsg"], "成功");
+    assert_eq!(success["result"]["city"], "杭州");
+    assert!(success.get("code").is_none());
+    assert!(success.get("data").is_none());
+
+    for id in [ep1.id, ep2.id] {
+        let param: Value = serde_json::from_str(
+            &svc.get_scene(&id, SceneKind::ParamError)
+                .unwrap()
+                .unwrap()
+                .body_json,
+        )
+        .unwrap();
+        assert_eq!(param["errno"], json!(9999));
+        assert_eq!(param["errmsg"], "参数错误");
+        assert_eq!(param["result"], json!(null));
+        assert!(param.get("code").is_none());
+        assert!(param.get("msg").is_none());
+        assert!(param.get("data").is_none());
+    }
 }

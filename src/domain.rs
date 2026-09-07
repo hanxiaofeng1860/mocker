@@ -14,6 +14,57 @@ pub struct Project {
     pub success_code: String,
     pub fail_code: String,
     pub default_headers: Vec<HeaderKv>,
+    pub envelope: Envelope,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Envelope {
+    pub code_key: String,
+    pub msg_key: String,
+    pub data_key: String,
+}
+
+impl Default for Envelope {
+    fn default() -> Self {
+        Self {
+            code_key: "code".into(),
+            msg_key: "msg".into(),
+            data_key: "data".into(),
+        }
+    }
+}
+
+impl Envelope {
+    pub fn sanitized(&self) -> Self {
+        Self {
+            code_key: nonempty_key(&self.code_key, "code"),
+            msg_key: nonempty_key(&self.msg_key, "msg"),
+            data_key: nonempty_key(&self.data_key, "data"),
+        }
+    }
+
+    pub fn pack(
+        &self,
+        code: serde_json::Value,
+        msg: &str,
+        data: serde_json::Value,
+    ) -> serde_json::Value {
+        let env = self.sanitized();
+        let mut map = serde_json::Map::new();
+        map.insert(env.code_key, code);
+        map.insert(env.msg_key, serde_json::Value::String(msg.to_string()));
+        map.insert(env.data_key, data);
+        serde_json::Value::Object(map)
+    }
+}
+
+fn nonempty_key(value: &str, fallback: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,10 +144,24 @@ pub struct Scene {
 pub struct GlobalSettings {
     pub selected_source_id: String,
     pub selected_model: String,
-    pub manual_base_url: String,
-    pub manual_api_key: String,
-    pub manual_protocol: String,
-    pub manual_model: String,
+    #[serde(default)]
+    pub manual_sources: Vec<ManualSource>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManualSource {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub protocol: String,
+    pub model: String,
+}
+
+impl GlobalSettings {
+    pub fn find_manual(&self, id: &str) -> Option<&ManualSource> {
+        self.manual_sources.iter().find(|m| m.id == id)
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -1,4 +1,7 @@
-use mocker::domain::{Endpoint, GlobalSettings, HeaderKv, Project, RequestLog, Scene, SceneKind};
+use mocker::domain::{
+    Endpoint, Envelope, GlobalSettings, HeaderKv, ManualSource, Project, RequestLog, Scene,
+    SceneKind,
+};
 use mocker::store::{self, Store};
 use tempfile::TempDir;
 
@@ -19,6 +22,7 @@ fn sample_project() -> Project {
             key: "sn".into(),
             value: "device".into(),
         }],
+        envelope: Envelope::default(),
     }
 }
 
@@ -83,6 +87,7 @@ fn insert_project_endpoint_and_scenes_then_switch_current() {
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].id, project.id);
     assert_eq!(projects[0].default_headers[0].key, "sn");
+    assert_eq!(projects[0].envelope, Envelope::default());
 
     let endpoints = store.list_endpoints(&project.id).unwrap();
     assert_eq!(endpoints.len(), 1);
@@ -107,10 +112,14 @@ fn settings_round_trip_persists_manual_key_not_scan_token() {
     let settings = GlobalSettings {
         selected_source_id: "claude-code".into(),
         selected_model: "claude-sonnet".into(),
-        manual_base_url: "http://127.0.0.1:9".into(),
-        manual_api_key: "sk-manual-allowed".into(),
-        manual_protocol: "anthropic-messages".into(),
-        manual_model: "claude-sonnet".into(),
+        manual_sources: vec![ManualSource {
+            id: "manual-1".into(),
+            name: "本地".into(),
+            base_url: "http://127.0.0.1:9".into(),
+            api_key: "sk-manual-allowed".into(),
+            protocol: "anthropic-messages".into(),
+            model: "claude-sonnet".into(),
+        }],
     };
 
     {
@@ -118,11 +127,12 @@ fn settings_round_trip_persists_manual_key_not_scan_token() {
         store.save_settings(&settings).unwrap();
         let loaded = store.load_settings().unwrap();
         assert_eq!(loaded.selected_source_id, "claude-code");
-        assert_eq!(loaded.manual_api_key, "sk-manual-allowed");
+        assert_eq!(loaded.manual_sources.len(), 1);
+        assert_eq!(loaded.manual_sources[0].api_key, "sk-manual-allowed");
         assert_eq!(loaded.selected_model, settings.selected_model);
-        assert_eq!(loaded.manual_base_url, settings.manual_base_url);
-        assert_eq!(loaded.manual_protocol, settings.manual_protocol);
-        assert_eq!(loaded.manual_model, settings.manual_model);
+        assert_eq!(loaded.manual_sources[0].base_url, "http://127.0.0.1:9");
+        assert_eq!(loaded.manual_sources[0].protocol, "anthropic-messages");
+        assert_eq!(loaded.manual_sources[0].model, "claude-sonnet");
     }
 
     let conn = rusqlite::Connection::open(&path).unwrap();
@@ -151,6 +161,7 @@ fn settings_round_trip_persists_manual_key_not_scan_token() {
             "manual_api_key",
             "manual_protocol",
             "manual_model",
+            "manual_sources",
         ]
     );
 }
@@ -188,4 +199,80 @@ fn clear_logs_deletes_only_that_project() {
     store.clear_logs(&a.id).unwrap();
     assert!(store.list_logs(&a.id).unwrap().is_empty());
     assert_eq!(store.list_logs(&b.id).unwrap().len(), 1);
+}
+
+#[test]
+fn project_envelope_round_trip() {
+    let (_dir, store) = open_tmp();
+    let mut project = sample_project();
+    project.envelope = Envelope {
+        code_key: "errno".into(),
+        msg_key: "message".into(),
+        data_key: "result".into(),
+    };
+    store.upsert_project(&project).unwrap();
+    let got = store.get_project(&project.id).unwrap().unwrap();
+    assert_eq!(got.envelope.code_key, "errno");
+    assert_eq!(got.envelope.msg_key, "message");
+    assert_eq!(got.envelope.data_key, "result");
+}
+
+#[test]
+fn open_migrates_old_projects_table_with_envelope_defaults() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("mocker.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                success_code TEXT NOT NULL,
+                fail_code TEXT NOT NULL,
+                default_headers TEXT NOT NULL
+            );
+            INSERT INTO projects VALUES ('p1','old',18080,'0000','9999','[]');
+            "#,
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    let project = store.get_project("p1").unwrap().unwrap();
+    assert_eq!(project.envelope, Envelope::default());
+}
+
+#[test]
+fn open_lifts_legacy_manual_columns_into_manual_sources() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("mocker.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                selected_source_id TEXT NOT NULL,
+                selected_model TEXT NOT NULL,
+                manual_base_url TEXT NOT NULL,
+                manual_api_key TEXT NOT NULL,
+                manual_protocol TEXT NOT NULL,
+                manual_model TEXT NOT NULL
+            );
+            INSERT INTO settings VALUES (
+                1,'manual','deepseek','http://127.0.0.1:1','sk-old','openai-chat','deepseek'
+            );
+            "#,
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    let loaded = store.load_settings().unwrap();
+    assert_eq!(loaded.selected_source_id, "manual");
+    assert_eq!(loaded.manual_sources.len(), 1);
+    assert_eq!(loaded.manual_sources[0].id, "manual");
+    assert_eq!(loaded.manual_sources[0].name, "deepseek");
+    assert_eq!(loaded.manual_sources[0].api_key, "sk-old");
+    assert_eq!(loaded.manual_sources[0].base_url, "http://127.0.0.1:1");
 }

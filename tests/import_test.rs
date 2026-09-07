@@ -1,4 +1,4 @@
-use mocker::domain::{Field, FieldLoc, SceneKind};
+use mocker::domain::{Envelope, Field, FieldLoc, SceneKind};
 use mocker::import::{
     attach_scenes, run_import, semantic_values_prompt, validate_import, ImportError,
 };
@@ -91,7 +91,7 @@ fn non_json_is_error() {
 #[test]
 fn attach_scenes_four_kinds_and_empty_list_rule() {
     let draft = validate_import(ONE_ENDPOINT).unwrap().pop().unwrap();
-    let scenes = attach_scenes(&draft, "0000", "9999");
+    let scenes = attach_scenes(&draft, "0000", "9999", &Envelope::default());
     assert_eq!(scenes[0].kind, SceneKind::Success);
     assert_eq!(scenes[1].kind, SceneKind::Empty);
     assert_eq!(scenes[2].kind, SceneKind::ParamError);
@@ -127,7 +127,7 @@ fn run_import_uses_complete_json_then_validate() {
     let fake = Fake {
         json: format!("```json\n{ONE_ENDPOINT}\n```"),
     };
-    let drafts = run_import(&fake, "PASTE-FIXTURE", "0000", "9999").unwrap();
+    let drafts = run_import(&fake, "PASTE-FIXTURE", "0000", "9999", &Envelope::default()).unwrap();
     assert_eq!(drafts.len(), 1);
     assert_eq!(drafts[0].path, "/hl/pub/phone/v1/queryPhoneHomeData");
 }
@@ -136,6 +136,7 @@ fn run_import_uses_complete_json_then_validate() {
 fn semantic_values_prompt_asks_for_realistic_values_and_json_only() {
     let prompt = semantic_values_prompt(
         "0000",
+        &Envelope::default(),
         "查询设备",
         "POST",
         "/hl/pub/phone/v1/queryPhoneBasicInfo",

@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::domain::{Field, FieldLoc, Scene, SceneKind};
+use crate::domain::{Envelope, Field, FieldLoc, Scene, SceneKind};
 use crate::llm::{LlmError, ModelClient};
 use crate::scenes::{generate_non_success, scene_http_status};
 
@@ -35,7 +35,16 @@ pub struct ImportDraft {
     pub success_body: Value,
 }
 
-pub fn import_prompt(paste: &str, success_code: &str, fail_code: &str) -> String {
+pub fn import_prompt(
+    paste: &str,
+    success_code: &str,
+    fail_code: &str,
+    envelope: &Envelope,
+) -> String {
+    let env = envelope.sanitized();
+    let code_key = &env.code_key;
+    let msg_key = &env.msg_key;
+    let data_key = &env.data_key;
     format!(
         r#"你是接口文档解析器。根据用户粘贴的公司接口说明，提取一个或多个 HTTP 接口。
 
@@ -44,6 +53,7 @@ only return JSON object
 
 项目成功码: {success_code}
 项目失败码: {fail_code}
+响应信封字段: {code_key} / {msg_key} / {data_key}
 
 JSON 形状：
 {{
@@ -81,7 +91,7 @@ JSON 形状：
 - method 只能是 GET、POST、PUT、PATCH、DELETE，缺省 POST。
 - path 必须是完整路径且以 / 开头，不含 host、不含 query。
 - 标题或描述含「废弃」时 deprecated 为 true。
-- 若文档出参是 code / msg / data 信封：envelope 为 true，success_body 必须是完整信封，且 code 使用项目成功码 {success_code}。
+- 若文档出参是 {code_key} / {msg_key} / {data_key} 信封：envelope 为 true，success_body 必须是完整信封，且 {code_key} 使用项目成功码 {success_code}。
 - response_fields 与 body 字段使用同一字段对象，嵌套放在 children。
 
 接口说明：
@@ -92,6 +102,7 @@ JSON 形状：
 
 pub fn semantic_values_prompt(
     success_code: &str,
+    envelope: &Envelope,
     endpoint_name: &str,
     method: &str,
     path: &str,
@@ -125,6 +136,9 @@ pub fn semantic_values_prompt(
         field_lines.push_str("（无字段表，请按当前 JSON 的键名推断语义）\n");
     }
     let skeleton = current_json.trim();
+    let env = envelope.sanitized();
+    let code_key = &env.code_key;
+    let msg_key = &env.msg_key;
     format!(
         r#"你是 mock 数据生成器。根据接口字段的英文名、中文名和类型，给 JSON 填入符合真实业务语义的示例值。
 
@@ -141,7 +155,7 @@ only return JSON object
 
 约束：
 - 保持字段名和 JSON 结构不变，只改 value。
-- code 必须使用项目成功码 {success_code}，msg 用「成功」。
+- {code_key} 必须使用项目成功码 {success_code}，{msg_key} 用「成功」。
 - 按语义填值：city/城市→国内城市名（如杭州、成都）；mobile/phone/手机→1 开头 11 位；name/姓名→中文姓名；org/机构→中文机构名；email→合法邮箱；id/sn→非空字符串；金额→合理数字；时间→ISO 或常见日期；枚举用字段说明里的合法值；列表 2～3 条。
 - 不要编造字段表或当前 JSON 里没有的键。
 - 不要返回解释性文字。
@@ -154,10 +168,33 @@ pub fn run_import(
     paste: &str,
     success_code: &str,
     fail_code: &str,
+    envelope: &Envelope,
 ) -> Result<Vec<ImportDraft>, ImportError> {
-    let prompt = import_prompt(paste, success_code, fail_code);
+    let prompt = import_prompt(paste, success_code, fail_code, envelope);
     let raw = client.complete_json(&prompt)?;
     validate_import(&raw)
+}
+
+pub fn attach_scenes(
+    draft: &ImportDraft,
+    success_code: &str,
+    fail_code: &str,
+    envelope: &Envelope,
+) -> [Scene; 4] {
+    SceneKind::all().map(|kind| Scene {
+        // Filled when the draft is committed to an endpoint.
+        endpoint_id: String::new(),
+        kind,
+        http_status: scene_http_status(kind),
+        body_json: generate_non_success(
+            kind,
+            success_code,
+            fail_code,
+            &draft.success_body,
+            envelope,
+        )
+        .to_string(),
+    })
 }
 
 pub fn validate_import(raw: &str) -> Result<Vec<ImportDraft>, ImportError> {
@@ -174,17 +211,6 @@ pub fn validate_import(raw: &str) -> Result<Vec<ImportDraft>, ImportError> {
         drafts.push(parse_draft(index, item)?);
     }
     Ok(drafts)
-}
-
-pub fn attach_scenes(draft: &ImportDraft, success_code: &str, fail_code: &str) -> [Scene; 4] {
-    SceneKind::all().map(|kind| Scene {
-        // Filled when the draft is committed to an endpoint.
-        endpoint_id: String::new(),
-        kind,
-        http_status: scene_http_status(kind),
-        body_json: generate_non_success(kind, success_code, fail_code, &draft.success_body)
-            .to_string(),
-    })
 }
 
 fn parse_draft(index: usize, item: &Value) -> Result<ImportDraft, ImportError> {

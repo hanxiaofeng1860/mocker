@@ -14,11 +14,11 @@ use axum::http::header::{
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::routing::Router;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
-use crate::domain::{Project, RequestLog};
+use crate::domain::{Envelope, Project, RequestLog};
 use crate::scenes::encode_code;
 use crate::store::Store;
 
@@ -28,6 +28,7 @@ const BODY_LIMIT: usize = 16 * 1024 * 1024;
 #[derive(Clone, Debug)]
 pub struct RouteSnapshot {
     pub fail_code: String,
+    pub envelope: Envelope,
     pub default_header_keys: Vec<String>,
     pub routes: HashMap<(String, String), Route>,
 }
@@ -210,6 +211,7 @@ fn build_snapshot(store: &Store, project: &Project) -> Result<RouteSnapshot> {
     }
     Ok(RouteSnapshot {
         fail_code: project.fail_code.clone(),
+        envelope: project.envelope.clone(),
         default_header_keys: project
             .default_headers
             .iter()
@@ -236,9 +238,10 @@ async fn mock_handler(State(state): State<AppState>, req: Request) -> Response {
 
     let started = Instant::now();
     let fail_code = state.snapshot.load().fail_code.clone();
+    let envelope = state.snapshot.load().envelope.clone();
     match handle_request(&state, req, method, started).await {
         Ok(response) => response,
-        Err(_) => json_response(500, &envelope(&fail_code, "mock 内部错误")),
+        Err(_) => json_response(500, &envelope_body(&fail_code, "mock 内部错误", &envelope)),
     }
 }
 
@@ -268,14 +271,14 @@ async fn handle_request(
         ),
         Lookup::MethodNotAllowed => (
             405,
-            envelope(&snap.fail_code, "方法不允许"),
+            envelope_body(&snap.fail_code, "方法不允许", &snap.envelope),
             false,
             None,
             None,
         ),
         Lookup::NotFound => (
             404,
-            envelope(&snap.fail_code, "未找到 mock 接口"),
+            envelope_body(&snap.fail_code, "未找到 mock 接口", &snap.envelope),
             false,
             None,
             None,
@@ -352,13 +355,10 @@ fn headers_json(headers: &HeaderMap) -> String {
     Value::Object(map).to_string()
 }
 
-fn envelope(fail_code: &str, msg: &str) -> String {
-    json!({
-        "code": encode_code(fail_code),
-        "msg": msg,
-        "data": Value::Null,
-    })
-    .to_string()
+fn envelope_body(fail_code: &str, msg: &str, envelope: &Envelope) -> String {
+    envelope
+        .pack(encode_code(fail_code), msg, Value::Null)
+        .to_string()
 }
 
 fn apply_cors(headers: &mut HeaderMap) {

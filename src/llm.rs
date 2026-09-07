@@ -88,6 +88,24 @@ impl ModelClient for HttpModelClient {
     }
 }
 
+pub fn list_models(
+    protocol: Protocol,
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<String>, LlmError> {
+    let url = models_url(base_url, protocol);
+    let key = api_key.trim().to_string();
+    thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| LlmError::Request(e.to_string()))?;
+        rt.block_on(send_list_models(protocol, &url, &key))
+    })
+    .join()
+    .unwrap_or_else(|_| Err(LlmError::Request("llm thread panicked".into())))
+}
+
 pub fn read_credential(from: &CredentialFrom) -> Result<String, LlmError> {
     let CredentialFrom::File { path, kind } = from;
     match kind {
@@ -153,6 +171,30 @@ fn request_url(base_url: &str, protocol: Protocol) -> String {
     }
 }
 
+fn models_url(base_url: &str, protocol: Protocol) -> String {
+    let base = base_url.trim().trim_end_matches('/');
+    match protocol {
+        Protocol::AnthropicMessages => {
+            if let Some(prefix) = base.strip_suffix("/v1/messages") {
+                format!("{prefix}/v1/models")
+            } else if let Some(prefix) = base.strip_suffix("/messages") {
+                format!("{prefix}/models")
+            } else if base.ends_with("/v1") {
+                format!("{base}/models")
+            } else {
+                format!("{base}/v1/models")
+            }
+        }
+        Protocol::OpenAIChat => {
+            if let Some(prefix) = base.strip_suffix("/chat/completions") {
+                format!("{}/models", prefix.trim_end_matches('/'))
+            } else {
+                format!("{base}/models")
+            }
+        }
+    }
+}
+
 async fn send_complete(
     protocol: Protocol,
     url: &str,
@@ -201,6 +243,78 @@ async fn send_complete(
         });
     }
     extract_text(protocol, &text)
+}
+
+async fn send_list_models(
+    protocol: Protocol,
+    url: &str,
+    key: &str,
+) -> Result<Vec<String>, LlmError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| LlmError::Request(e.to_string()))?;
+    let mut builder = client.get(url);
+    builder = match protocol {
+        Protocol::AnthropicMessages => {
+            let builder = builder.header("anthropic-version", "2023-06-01");
+            if key.is_empty() {
+                builder
+            } else {
+                builder.header("x-api-key", key)
+            }
+        }
+        Protocol::OpenAIChat => {
+            if key.is_empty() {
+                builder
+            } else {
+                builder.bearer_auth(key)
+            }
+        }
+    };
+    let resp = builder
+        .send()
+        .await
+        .map_err(|e| LlmError::Request(e.to_string()))?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| LlmError::Request(e.to_string()))?;
+    if !status.is_success() {
+        return Err(LlmError::Http {
+            status: status.as_u16(),
+            body: truncate(&text, 2000),
+        });
+    }
+    let v: Value = serde_json::from_str(&text)
+        .map_err(|e| LlmError::Request(format!("响应不是 JSON: {e}")))?;
+    Ok(parse_model_ids(&v))
+}
+
+fn parse_model_ids(v: &Value) -> Vec<String> {
+    let fallback: Vec<Value> = Vec::new();
+    let items = v
+        .get("data")
+        .or_else(|| v.get("models"))
+        .and_then(Value::as_array)
+        .or_else(|| v.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&fallback);
+    let mut ids: Vec<String> = items
+        .iter()
+        .filter_map(|item| {
+            item.get("id")
+                .and_then(Value::as_str)
+                .or_else(|| item.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 fn extract_text(protocol: Protocol, text: &str) -> Result<String, LlmError> {
@@ -280,4 +394,63 @@ fn truncate(s: &str, max_chars: usize) -> String {
         out.push(ch);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{models_url, parse_model_ids};
+    use crate::sources::Protocol;
+    use serde_json::json;
+
+    #[test]
+    fn models_url_openai_matches_chat_base() {
+        assert_eq!(
+            models_url("https://api.deepseek.com", Protocol::OpenAIChat),
+            "https://api.deepseek.com/models"
+        );
+        assert_eq!(
+            models_url("https://api.openai.com/v1", Protocol::OpenAIChat),
+            "https://api.openai.com/v1/models"
+        );
+        assert_eq!(
+            models_url(
+                "https://example.com/v1/chat/completions",
+                Protocol::OpenAIChat
+            ),
+            "https://example.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn models_url_anthropic_uses_v1_models() {
+        assert_eq!(
+            models_url("https://api.anthropic.com", Protocol::AnthropicMessages),
+            "https://api.anthropic.com/v1/models"
+        );
+        assert_eq!(
+            models_url("https://api.anthropic.com/v1", Protocol::AnthropicMessages),
+            "https://api.anthropic.com/v1/models"
+        );
+        assert_eq!(
+            models_url(
+                "https://api.anthropic.com/v1/messages",
+                Protocol::AnthropicMessages
+            ),
+            "https://api.anthropic.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn parse_model_ids_from_openai_and_plain_list() {
+        let openai = json!({"data":[{"id":"deepseek-chat"},{"id":"deepseek-v4-flash"}]});
+        assert_eq!(
+            parse_model_ids(&openai),
+            vec!["deepseek-chat".to_string(), "deepseek-v4-flash".to_string()]
+        );
+        let plain = json!({"models":["b","a","a"]});
+        assert_eq!(
+            parse_model_ids(&plain),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
 }

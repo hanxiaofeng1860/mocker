@@ -19,7 +19,9 @@ use gpui_component::{
     Sizable as _, StyledExt as _, WindowExt as _,
 };
 
-use crate::domain::{Endpoint, Field, FieldLoc, HeaderKv, Project, RequestLog, SceneKind};
+use crate::domain::{
+    Endpoint, Envelope, Field, FieldLoc, HeaderKv, Project, RequestLog, SceneKind,
+};
 use crate::import::semantic_values_prompt;
 use crate::llm::ModelClient;
 use crate::service::AppService;
@@ -95,6 +97,9 @@ pub(super) struct WorkbenchState {
     settings_success: Entity<InputState>,
     settings_fail: Entity<InputState>,
     settings_headers: Entity<InputState>,
+    settings_env_code: Entity<InputState>,
+    settings_env_msg: Entity<InputState>,
+    settings_env_data: Entity<InputState>,
     enabled: bool,
     current_scene: SceneKind,
     json_invalid: bool,
@@ -126,6 +131,7 @@ impl WorkbenchState {
                 success_code: "0000".into(),
                 fail_code: "9999".into(),
                 default_headers: Vec::new(),
+                envelope: Envelope::default(),
             });
         let endpoints = service.list_endpoints(&project_id).unwrap_or_default();
         let selected = endpoints.first().cloned();
@@ -204,6 +210,21 @@ impl WorkbenchState {
                 .placeholder("sn")
                 .default_value(header_keys_text(&project.default_headers))
         });
+        let settings_env_code = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("code")
+                .default_value(project.envelope.code_key.clone())
+        });
+        let settings_env_msg = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("msg")
+                .default_value(project.envelope.msg_key.clone())
+        });
+        let settings_env_data = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("data")
+                .default_value(project.envelope.data_key.clone())
+        });
 
         let mut state = Self {
             selected_id: selected.as_ref().map(|e| e.id.clone()),
@@ -222,6 +243,9 @@ impl WorkbenchState {
             settings_success,
             settings_fail,
             settings_headers,
+            settings_env_code,
+            settings_env_msg,
+            settings_env_data,
             enabled,
             current_scene: scene,
             fields: Vec::new(),
@@ -533,7 +557,29 @@ fn project_settings_form(state: &WorkbenchState, cx: &mut Context<AppView>) -> i
                         .label("默认请求头（逗号分隔）")
                         .col_span(2)
                         .child(Input::new(&state.settings_headers).w_full()),
+                )
+                .child(
+                    field()
+                        .label("信封 · 状态码字段")
+                        .child(Input::new(&state.settings_env_code).w_full()),
+                )
+                .child(
+                    field()
+                        .label("信封 · 消息字段")
+                        .child(Input::new(&state.settings_env_msg).w_full()),
+                )
+                .child(
+                    field()
+                        .label("信封 · 数据字段")
+                        .col_span(2)
+                        .child(Input::new(&state.settings_env_data).w_full()),
                 ),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("保存后会把项目里所有接口的场景 JSON 换成新信封字段名，里面的值保持不变。"),
         )
         .child(
             h_flex()
@@ -895,6 +941,7 @@ fn field_table(
         FieldLoc::Body => "add-body",
         FieldLoc::Response => "add-response",
     };
+    let data_key = state.project.envelope.data_key.clone();
 
     style::sheet(cx)
         .w_full()
@@ -914,7 +961,7 @@ fn field_table(
         .when(!rows.is_empty(), |this| {
             this.child(field_header(loc, cx)).children(
                 rows.into_iter()
-                    .map(|row| field_row(row, loc, &state.fields, cx))
+                    .map(|row| field_row(row, loc, &state.fields, &data_key, cx))
                     .collect::<Vec<_>>(),
             )
         })
@@ -922,28 +969,15 @@ fn field_table(
             state.fields.iter().any(|r| r.field.location == loc),
             |this| {
                 this.child(
-                    h_flex()
-                        .p_2()
-                        .gap_2()
-                        .child(
-                            Button::new(SharedString::from(add_id.to_string()))
-                                .small()
-                                .label(add_label)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.add_work_field(loc, window, cx);
-                                    cx.notify();
-                                })),
-                        )
-                        .when(loc == FieldLoc::Response, |this| {
-                            this.child(
-                                Button::new("regen-fields")
-                                    .small()
-                                    .label("按字段重新生成")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.confirm_regenerate_fields(window, cx);
-                                    })),
-                            )
-                        }),
+                    h_flex().p_2().gap_2().child(
+                        Button::new(SharedString::from(add_id.to_string()))
+                            .small()
+                            .label(add_label)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.add_work_field(loc, window, cx);
+                                cx.notify();
+                            })),
+                    ),
                 )
             },
         )
@@ -988,6 +1022,7 @@ fn field_row(
     row: &FieldRow,
     loc: FieldLoc,
     all: &[FieldRow],
+    data_key: &str,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let id = row.field.id.clone();
@@ -1003,7 +1038,7 @@ fn field_row(
         }));
     match loc {
         FieldLoc::Response => {
-            let path = field_path_label(&row.field, all);
+            let path = field_path_label(&row.field, all, data_key);
             h_flex()
                 .w_full()
                 .gap_1()
@@ -1275,6 +1310,15 @@ impl AppView {
             work.settings_headers.update(cx, |input, cx| {
                 input.set_value(header_keys_text(&project.default_headers), window, cx);
             });
+            work.settings_env_code.update(cx, |input, cx| {
+                input.set_value(project.envelope.code_key.clone(), window, cx);
+            });
+            work.settings_env_msg.update(cx, |input, cx| {
+                input.set_value(project.envelope.msg_key.clone(), window, cx);
+            });
+            work.settings_env_data.update(cx, |input, cx| {
+                input.set_value(project.envelope.data_key.clone(), window, cx);
+            });
         }
     }
 
@@ -1287,6 +1331,9 @@ impl AppView {
         let success = work.settings_success.read(cx).value();
         let fail = work.settings_fail.read(cx).value();
         let headers_raw = work.settings_headers.read(cx).value();
+        let env_code = work.settings_env_code.read(cx).value();
+        let env_msg = work.settings_env_msg.read(cx).value();
+        let env_data = work.settings_env_data.read(cx).value();
         let Some(port) = parse_port(port_raw.as_str()) else {
             window.push_notification(Notification::error("端口无效"), cx);
             return;
@@ -1297,12 +1344,19 @@ impl AppView {
         project.success_code = trimmed_or(success.as_str(), "0000");
         project.fail_code = trimmed_or(fail.as_str(), "9999");
         project.default_headers = parse_headers(headers_raw.as_str(), &project.default_headers);
+        project.envelope = Envelope {
+            code_key: env_code.to_string(),
+            msg_key: env_msg.to_string(),
+            data_key: env_data.to_string(),
+        }
+        .sanitized();
         match self.service.save_project(project.clone()) {
             Ok(()) => {
                 if let Some(work) = self.work.as_mut() {
                     work.project = project;
                     work.show_settings = false;
                 }
+                self.reload_work_json(window, cx);
             }
             Err(err) => {
                 window.push_notification(Notification::error(err.to_string()), cx);
@@ -1604,10 +1658,6 @@ impl AppView {
         self.save_work_fields(window, cx);
     }
 
-    fn confirm_regenerate_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.sync_json_from_response_fields(window, cx);
-    }
-
     fn sync_json_from_response_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(work) = self.work.as_ref() else {
             return;
@@ -1694,6 +1744,7 @@ impl AppView {
         let current_json = work.json.read(cx).value().to_string();
         let prompt = semantic_values_prompt(
             &project.success_code,
+            &project.envelope,
             &ep.name,
             &ep.method,
             &ep.path,
@@ -1885,15 +1936,20 @@ fn trimmed_or(value: &str, fallback: &str) -> String {
     }
 }
 
-fn field_path_label(field: &Field, all: &[FieldRow]) -> String {
+fn field_path_label(field: &Field, all: &[FieldRow], data_key: &str) -> String {
+    let fallback = if data_key.trim().is_empty() {
+        "data"
+    } else {
+        data_key.trim()
+    };
     if let Some(pid) = &field.parent_id {
         all.iter()
             .find(|r| r.field.id == *pid)
             .map(|r| r.field.name.clone())
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "data".into())
+            .unwrap_or_else(|| fallback.to_string())
     } else {
-        "data".into()
+        fallback.to_string()
     }
 }
 
