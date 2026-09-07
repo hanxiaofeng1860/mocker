@@ -12,7 +12,7 @@ use gpui_component::{
     menu::{ContextMenuExt as _, PopupMenuItem},
     notification::Notification,
     scroll::ScrollableElement as _,
-    select::{Select, SelectEvent, SelectState},
+    select::{SearchableVec, Select, SelectEvent, SelectState},
     switch::Switch,
     tag::Tag,
     v_flex, ActiveTheme as _, Colorize as _, Disableable as _, IndexPath, Selectable as _,
@@ -20,7 +20,7 @@ use gpui_component::{
 };
 
 use crate::domain::{
-    Endpoint, Envelope, Field, FieldLoc, HeaderKv, Project, RequestLog, SceneKind,
+    DataKind, Endpoint, Envelope, Field, FieldLoc, HeaderKv, Project, RequestLog, SceneKind,
 };
 use crate::import::semantic_values_prompt;
 use crate::llm::ModelClient;
@@ -34,12 +34,16 @@ use super::settings::client_for_selection;
 use super::style;
 
 const METHODS: [&'static str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+const FIELD_TYPES: [&'static str; 7] = [
+    "String", "Integer", "Number", "Boolean", "Object", "Array", "Null",
+];
+const TYPE_COL_W: f32 = 120.;
 
 pub(super) struct FieldRow {
     field: Field,
     name: Entity<InputState>,
     name_zh: Entity<InputState>,
-    type_name: Entity<InputState>,
+    type_select: Entity<SelectState<SearchableVec<String>>>,
     comment: Entity<InputState>,
     required: bool,
 }
@@ -56,15 +60,14 @@ impl FieldRow {
                 .placeholder("中文名")
                 .default_value(field.name_zh.clone())
         });
-        let type_name = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("String")
-                .default_value(if field.type_name.is_empty() {
-                    "String".into()
-                } else {
-                    field.type_name.clone()
-                })
-        });
+        let current = if field.type_name.trim().is_empty() {
+            "String".to_string()
+        } else {
+            field.type_name.clone()
+        };
+        let (items, selected) = type_items(&current);
+        let type_select =
+            cx.new(|cx| SelectState::new(items, selected, window, cx).searchable(true));
         let comment = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("说明")
@@ -75,7 +78,7 @@ impl FieldRow {
             field,
             name,
             name_zh,
-            type_name,
+            type_select,
             comment,
         }
     }
@@ -338,7 +341,7 @@ impl WorkbenchState {
             self._field_subs
                 .push(subscribe_field_input(&row.name_zh, loc, window, cx));
             self._field_subs
-                .push(subscribe_field_input(&row.type_name, loc, window, cx));
+                .push(subscribe_field_type(&row.type_select, loc, window, cx));
             self._field_subs
                 .push(subscribe_field_input(&row.comment, loc, window, cx));
             self.fields.push(row);
@@ -352,13 +355,54 @@ impl WorkbenchState {
                 let mut field = row.field.clone();
                 field.name = row.name.read(cx).value().to_string();
                 field.name_zh = row.name_zh.read(cx).value().to_string();
-                field.type_name = row.type_name.read(cx).value().to_string();
+                field.type_name = row
+                    .type_select
+                    .read(cx)
+                    .selected_value()
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        if row.field.type_name.trim().is_empty() {
+                            "String".into()
+                        } else {
+                            row.field.type_name.clone()
+                        }
+                    });
                 field.comment = row.comment.read(cx).value().to_string();
                 field.required = row.required;
                 field
             })
             .collect()
     }
+}
+
+fn type_items(current: &str) -> (SearchableVec<String>, Option<IndexPath>) {
+    let mut items: Vec<String> = FIELD_TYPES.iter().map(|s| (*s).to_string()).collect();
+    let cur = current.trim();
+    if !cur.is_empty() && !items.iter().any(|t| t == cur) {
+        items.insert(0, cur.to_string());
+    }
+    let selected = items.iter().position(|t| t == cur).map(IndexPath::new);
+    (SearchableVec::new(items), selected)
+}
+
+fn subscribe_field_type(
+    select: &Entity<SelectState<SearchableVec<String>>>,
+    loc: FieldLoc,
+    window: &Window,
+    cx: &mut Context<AppView>,
+) -> Subscription {
+    cx.subscribe_in(
+        select,
+        window,
+        move |this, _, event: &SelectEvent<SearchableVec<String>>, window, cx| {
+            if matches!(event, SelectEvent::Confirm(Some(_))) {
+                this.save_work_fields(window, cx);
+                if loc == FieldLoc::Response {
+                    this.sync_json_from_response_fields(window, cx);
+                }
+            }
+        },
+    )
 }
 
 fn subscribe_field_input(
@@ -853,14 +897,30 @@ fn editor(state: &WorkbenchState, cx: &mut Context<AppView>) -> impl IntoElement
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .child(block_label("响应字段", cx))
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .h(px(28.))
+                                .items_center()
+                                .justify_between()
+                                .child(block_label("响应字段", cx))
+                                .child(data_kind_toggle(selected_data_kind(state), cx)),
+                        )
                         .child(field_table(state, FieldLoc::Response, cx)),
                 )
                 .child(
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .child(block_label("场景 JSON · 改完即写入快照", cx))
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .h(px(28.))
+                                .items_center()
+                                .child(block_label("场景 JSON · 改完即写入快照", cx)),
+                        )
                         .child(json_sheet(state, cx)),
                 ),
         )
@@ -942,6 +1002,7 @@ fn field_table(
         FieldLoc::Response => "add-response",
     };
     let data_key = state.project.envelope.data_key.clone();
+    let data_kind = selected_data_kind(state);
 
     style::sheet(cx)
         .w_full()
@@ -959,9 +1020,9 @@ fn field_table(
             )
         })
         .when(!rows.is_empty(), |this| {
-            this.child(field_header(loc, cx)).children(
+            this.child(field_header(loc, data_kind, cx)).children(
                 rows.into_iter()
-                    .map(|row| field_row(row, loc, &state.fields, &data_key, cx))
+                    .map(|row| field_row(row, loc, &state.fields, &data_key, data_kind, cx))
                     .collect::<Vec<_>>(),
             )
         })
@@ -983,39 +1044,95 @@ fn field_table(
         )
 }
 
-fn field_header(loc: FieldLoc, cx: &mut Context<AppView>) -> impl IntoElement {
+fn field_header(loc: FieldLoc, data_kind: DataKind, cx: &mut Context<AppView>) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
-    let cell = |text: &'static str, flex: bool| {
+    let flex_cell = |text: &'static str| {
         div()
-            .when(flex, |d| d.flex_1())
-            .when(!flex, |d| d.w(px(52.)))
+            .flex_1()
+            .min_w_0()
             .text_xs()
             .text_color(muted)
             .child(text)
     };
+    let type_cell = div()
+        .w(px(TYPE_COL_W))
+        .flex_shrink_0()
+        .text_xs()
+        .text_color(muted)
+        .child("类型");
     match loc {
         FieldLoc::Response => h_flex()
             .w_full()
             .gap_1()
             .px_2()
             .pt_2()
-            .child(cell("路径", true))
-            .child(cell("英文名", true))
-            .child(cell("中文名", true))
-            .child(cell("类型", true))
-            .child(div().w(px(36.))),
+            .when(data_kind == DataKind::Object, |this| {
+                this.child(flex_cell("路径"))
+            })
+            .child(flex_cell("英文名"))
+            .child(flex_cell("中文名"))
+            .child(type_cell)
+            .child(div().w(px(36.)).flex_shrink_0()),
         _ => h_flex()
             .w_full()
             .gap_1()
             .px_2()
             .pt_2()
-            .child(cell("英文名", true))
-            .child(cell("中文名", true))
-            .child(cell("类型", true))
-            .child(div().w(px(48.)).text_xs().text_color(muted).child("必填"))
-            .child(cell("说明", true))
-            .child(div().w(px(36.))),
+            .child(flex_cell("英文名"))
+            .child(flex_cell("中文名"))
+            .child(type_cell)
+            .child(
+                div()
+                    .w(px(48.))
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(muted)
+                    .child("必填"),
+            )
+            .child(flex_cell("说明"))
+            .child(div().w(px(36.)).flex_shrink_0()),
     }
+}
+
+fn type_select_cell(state: &Entity<SelectState<SearchableVec<String>>>) -> impl IntoElement {
+    div()
+        .w(px(TYPE_COL_W))
+        .flex_shrink_0()
+        .child(Select::new(state).small().w_full())
+}
+
+fn selected_data_kind(state: &WorkbenchState) -> DataKind {
+    state
+        .selected_id
+        .as_ref()
+        .and_then(|id| state.endpoints.iter().find(|e| e.id == *id))
+        .map(|e| e.data_kind)
+        .unwrap_or(DataKind::Object)
+}
+
+fn data_kind_toggle(kind: DataKind, cx: &mut Context<AppView>) -> impl IntoElement {
+    h_flex()
+        .gap_1()
+        .child(
+            Button::new("data-kind-object")
+                .small()
+                .label("对象")
+                .selected(kind == DataKind::Object)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.set_work_data_kind(DataKind::Object, window, cx);
+                    cx.notify();
+                })),
+        )
+        .child(
+            Button::new("data-kind-array")
+                .small()
+                .label("数组")
+                .selected(kind == DataKind::Array)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.set_work_data_kind(DataKind::Array, window, cx);
+                    cx.notify();
+                })),
+        )
 }
 
 fn field_row(
@@ -1023,6 +1140,7 @@ fn field_row(
     loc: FieldLoc,
     all: &[FieldRow],
     data_key: &str,
+    data_kind: DataKind,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let id = row.field.id.clone();
@@ -1038,23 +1156,27 @@ fn field_row(
         }));
     match loc {
         FieldLoc::Response => {
-            let path = field_path_label(&row.field, all, data_key);
+            let path = field_path_label(&row.field, all, data_key, data_kind);
+            let depth = field_nest_depth(&row.field, all);
             h_flex()
                 .w_full()
                 .gap_1()
                 .px_2()
                 .py_1()
-                .child(
-                    div()
-                        .flex_1()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .child(path),
-                )
-                .child(Input::new(&row.name).small().flex_1())
-                .child(Input::new(&row.name_zh).small().flex_1())
-                .child(Input::new(&row.type_name).small().flex_1())
+                .when(data_kind == DataKind::Object, |this| {
+                    this.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(path),
+                    )
+                })
+                .child(field_name_cell(&row.name, depth, data_kind, cx))
+                .child(Input::new(&row.name_zh).small().flex_1().min_w_0())
+                .child(type_select_cell(&row.type_select))
                 .child(delete)
         }
         _ => {
@@ -1065,9 +1187,9 @@ fn field_row(
                 .gap_1()
                 .px_2()
                 .py_1()
-                .child(Input::new(&row.name).small().flex_1())
-                .child(Input::new(&row.name_zh).small().flex_1())
-                .child(Input::new(&row.type_name).small().flex_1())
+                .child(Input::new(&row.name).small().flex_1().min_w_0())
+                .child(Input::new(&row.name_zh).small().flex_1().min_w_0())
+                .child(type_select_cell(&row.type_select))
                 .child(
                     Checkbox::new(SharedString::from(format!("req-{req_id}")))
                         .checked(required)
@@ -1076,7 +1198,7 @@ fn field_row(
                             cx.notify();
                         })),
                 )
-                .child(Input::new(&row.comment).small().flex_1())
+                .child(Input::new(&row.comment).small().flex_1().min_w_0())
                 .child(delete)
         }
     }
@@ -1499,6 +1621,31 @@ impl AppView {
         self.save_work_endpoint(window, cx);
     }
 
+    fn set_work_data_kind(&mut self, kind: DataKind, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(work) = self.work.as_mut() else {
+            return;
+        };
+        let Some(id) = work.selected_id.clone() else {
+            return;
+        };
+        if work
+            .endpoints
+            .iter()
+            .find(|e| e.id == id)
+            .is_some_and(|e| e.data_kind == kind)
+        {
+            return;
+        }
+        if let Err(err) = self.service.switch_data_kind(&id, kind) {
+            window.push_notification(Notification::error(err.to_string()), cx);
+            return;
+        }
+        if let Some(ep) = work.endpoints.iter_mut().find(|e| e.id == id) {
+            ep.data_kind = kind;
+        }
+        self.reload_work_json(window, cx);
+    }
+
     fn set_work_scene(&mut self, kind: SceneKind, window: &mut Window, cx: &mut Context<Self>) {
         let Some(work) = self.work.as_mut() else {
             return;
@@ -1742,6 +1889,13 @@ impl AppView {
             return;
         };
         let current_json = work.json.read(cx).value().to_string();
+        let skeleton = crate::service::success_from_fields(
+            &project.success_code,
+            &fields,
+            &project.envelope,
+            ep.data_kind,
+        );
+        let skeleton = serde_json::to_string_pretty(&skeleton).unwrap_or(current_json);
         let prompt = semantic_values_prompt(
             &project.success_code,
             &project.envelope,
@@ -1749,7 +1903,8 @@ impl AppView {
             &ep.method,
             &ep.path,
             &fields,
-            &current_json,
+            &skeleton,
+            ep.data_kind,
         );
         work.regenerating = true;
         cx.spawn_in(window, async move |this, cx| {
@@ -1936,20 +2091,73 @@ fn trimmed_or(value: &str, fallback: &str) -> String {
     }
 }
 
-fn field_path_label(field: &Field, all: &[FieldRow], data_key: &str) -> String {
+fn field_nest_depth(field: &Field, all: &[FieldRow]) -> usize {
+    let mut depth = 0;
+    let mut current = field.parent_id.as_deref();
+    while let Some(pid) = current {
+        depth += 1;
+        current = all
+            .iter()
+            .find(|r| r.field.id == pid)
+            .and_then(|r| r.field.parent_id.as_deref());
+        if depth > 8 {
+            break;
+        }
+    }
+    depth
+}
+
+fn field_name_cell(
+    name: &Entity<InputState>,
+    depth: usize,
+    data_kind: DataKind,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let indent = if data_kind == DataKind::Array {
+        depth
+    } else {
+        0
+    };
+    h_flex()
+        .flex_1()
+        .min_w_0()
+        .gap_1()
+        .when(indent > 0, |this| this.pl(px(indent as f32 * 12.)))
+        .when(data_kind == DataKind::Array && indent > 0, |this| {
+            this.child(
+                div()
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("↳"),
+            )
+        })
+        .child(Input::new(name).small().flex_1().min_w_0())
+}
+
+fn field_path_label(
+    field: &Field,
+    all: &[FieldRow],
+    data_key: &str,
+    data_kind: DataKind,
+) -> String {
     let fallback = if data_key.trim().is_empty() {
         "data"
     } else {
         data_key.trim()
     };
-    if let Some(pid) = &field.parent_id {
+    let parent_name = field.parent_id.as_ref().and_then(|pid| {
         all.iter()
             .find(|r| r.field.id == *pid)
             .map(|r| r.field.name.clone())
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| fallback.to_string())
-    } else {
-        fallback.to_string()
+    });
+    match data_kind {
+        DataKind::Array => match parent_name {
+            Some(name) => format!("{fallback}[].{name}"),
+            None => format!("{fallback}[]"),
+        },
+        DataKind::Object => parent_name.unwrap_or_else(|| fallback.to_string()),
     }
 }
 

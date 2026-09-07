@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use anyhow::{anyhow, Result};
 
 use crate::domain::{
-    Endpoint, Envelope, Field, FieldLoc, GlobalSettings, HeaderKv, Project, RequestLog, Scene,
-    SceneKind,
+    DataKind, Endpoint, Envelope, Field, FieldLoc, GlobalSettings, HeaderKv, Project, RequestLog,
+    Scene, SceneKind,
 };
 use crate::import::{
     attach_scenes, import_prompt, strip_markdown_fences, validate_import, ImportDraft,
@@ -113,6 +113,15 @@ impl AppService {
                     store.upsert_scene(&scene)?;
                 }
             }
+            for (data_kind, raw) in store.list_data_kind_success(&ep.id)? {
+                let Ok(body) = serde_json::from_str::<Value>(&raw) else {
+                    continue;
+                };
+                let next = relabel_envelope(&body, old, new);
+                if next != body {
+                    store.upsert_data_kind_success(&ep.id, data_kind, &pretty_json(&next))?;
+                }
+            }
         }
         Ok(())
     }
@@ -158,6 +167,40 @@ impl AppService {
         self.runtime.refresh(&project_id)
     }
 
+    pub fn switch_data_kind(&self, endpoint_id: &str, kind: DataKind) -> Result<()> {
+        let (project_id, restored) = {
+            let store = lock(&self.store)?;
+            let mut endpoint = store
+                .get_endpoint(endpoint_id)?
+                .ok_or_else(|| anyhow!("endpoint not found: {endpoint_id}"))?;
+            if endpoint.data_kind == kind {
+                return Ok(());
+            }
+            if let Some(scene) = store.get_scene(endpoint_id, SceneKind::Success)? {
+                store.upsert_data_kind_success(endpoint_id, endpoint.data_kind, &scene.body_json)?;
+            }
+            let cached = store.get_data_kind_success(endpoint_id, kind)?;
+            endpoint.data_kind = kind;
+            store.upsert_endpoint(&endpoint).map_err(map_unique)?;
+            if let Some(body) = cached {
+                store.upsert_scene(&Scene {
+                    endpoint_id: endpoint_id.to_string(),
+                    kind: SceneKind::Success,
+                    http_status: scene_http_status(SceneKind::Success),
+                    body_json: body,
+                })?;
+                (endpoint.project_id, true)
+            } else {
+                (endpoint.project_id, false)
+            }
+        };
+        if !restored {
+            self.regenerate_scene_from_fields(endpoint_id, SceneKind::Success)?;
+        }
+        self.regenerate_scene_from_fields(endpoint_id, SceneKind::Empty)?;
+        self.runtime.refresh(&project_id)
+    }
+
     pub fn delete_endpoint(&self, endpoint_id: &str) -> Result<()> {
         let project_id = {
             let store = lock(&self.store)?;
@@ -191,6 +234,7 @@ impl AppService {
             deprecated: false,
             enabled: true,
             current_scene: SceneKind::Success,
+            data_kind: DataKind::Object,
         };
         let success = default_success_envelope(&project.success_code, &project.envelope);
         {
@@ -221,6 +265,9 @@ impl AppService {
             let endpoint = store
                 .get_endpoint(endpoint_id)?
                 .ok_or_else(|| anyhow!("endpoint not found: {endpoint_id}"))?;
+            if kind == SceneKind::Success {
+                store.upsert_data_kind_success(endpoint_id, endpoint.data_kind, &body)?;
+            }
             store.upsert_scene(&Scene {
                 endpoint_id: endpoint_id.to_string(),
                 kind,
@@ -300,6 +347,7 @@ impl AppService {
                     deprecated: draft.deprecated,
                     enabled: !draft.deprecated,
                     current_scene: SceneKind::Success,
+                    data_kind: infer_data_kind(&draft.success_body, &project.envelope),
                 })?;
                 let mut fields = draft.request_headers;
                 fields.extend(draft.request_body_fields);
@@ -327,7 +375,7 @@ impl AppService {
     }
 
     pub fn regenerate_scene_from_fields(&self, endpoint_id: &str, kind: SceneKind) -> Result<()> {
-        let (project, fields, success_body) = {
+        let (project, fields, success_body, data_kind) = {
             let store = lock(&self.store)?;
             let endpoint = store
                 .get_endpoint(endpoint_id)?
@@ -336,17 +384,18 @@ impl AppService {
                 .get_project(&endpoint.project_id)?
                 .ok_or_else(|| anyhow!("project not found: {}", endpoint.project_id))?;
             let fields = store.list_fields(endpoint_id)?;
+            let data_kind = endpoint.data_kind;
             let success_body = store
                 .get_scene(endpoint_id, SceneKind::Success)?
                 .and_then(|s| serde_json::from_str(&s.body_json).ok())
                 .unwrap_or_else(|| {
                     default_success_envelope(&project.success_code, &project.envelope)
                 });
-            (project, fields, success_body)
+            (project, fields, success_body, data_kind)
         };
         let body = match kind {
             SceneKind::Success => {
-                success_from_fields(&project.success_code, &fields, &project.envelope)
+                success_from_fields(&project.success_code, &fields, &project.envelope, data_kind)
             }
             other => generate_non_success(
                 other,
@@ -418,36 +467,109 @@ pub(crate) fn parse_generated_success(raw: &str) -> Result<Value> {
     serde_json::from_str(stripped).map_err(|e| anyhow!("模型输出无法解析为 JSON: {e}"))
 }
 
+pub(crate) const ARRAY_SAMPLE_COUNT: usize = 3;
+
+pub(crate) fn infer_data_kind(success_body: &Value, envelope: &Envelope) -> DataKind {
+    match success_body.get(&envelope.sanitized().data_key) {
+        Some(Value::Array(_)) => DataKind::Array,
+        _ => DataKind::Object,
+    }
+}
+
 pub(crate) fn success_from_fields(
     success_code: &str,
     fields: &[Field],
     envelope: &Envelope,
+    data_kind: DataKind,
 ) -> Value {
+    let data = match data_kind {
+        DataKind::Object => Value::Object(payload_from_fields(fields, envelope, None)),
+        DataKind::Array => {
+            let items = (1..=ARRAY_SAMPLE_COUNT)
+                .map(|i| Value::Object(payload_from_fields(fields, envelope, Some(i as u32))))
+                .collect();
+            Value::Array(items)
+        }
+    };
+    envelope.pack(crate::scenes::encode_code(success_code), "成功", data)
+}
+
+fn payload_from_fields(
+    fields: &[Field],
+    envelope: &Envelope,
+    index: Option<u32>,
+) -> Map<String, Value> {
+    let env = envelope.sanitized();
+    if let Some(parent) = data_wrapper_id(fields, envelope) {
+        return object_from_fields(fields, Some(parent), index);
+    }
+    let mut map = object_from_fields(fields, None, index);
+    map.remove(&env.code_key);
+    map.remove(&env.msg_key);
+    map.remove(&env.data_key);
+    map
+}
+
+fn data_wrapper_id<'a>(fields: &'a [Field], envelope: &Envelope) -> Option<&'a str> {
+    let data_key = envelope.sanitized().data_key;
+    fields
+        .iter()
+        .find(|field| {
+            field.location == FieldLoc::Response
+                && field.parent_id.is_none()
+                && field.name.trim() == data_key
+                && fields.iter().any(|child| {
+                    child.location == FieldLoc::Response
+                        && child.parent_id.as_deref() == Some(field.id.as_str())
+                })
+        })
+        .map(|field| field.id.as_str())
+}
+
+fn object_from_fields(
+    fields: &[Field],
+    parent_id: Option<&str>,
+    index: Option<u32>,
+) -> Map<String, Value> {
     let mut data = Map::new();
     for field in fields {
-        if field.location != FieldLoc::Response || field.parent_id.is_some() {
+        if field.location != FieldLoc::Response {
+            continue;
+        }
+        let matches_parent = match (field.parent_id.as_deref(), parent_id) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        };
+        if !matches_parent {
             continue;
         }
         let name = field.name.trim();
         if name.is_empty() {
             continue;
         }
-        data.insert(name.to_string(), sample_value(&field.type_name));
+        let ty = field.type_name.trim().to_ascii_lowercase();
+        let value = if matches!(ty.as_str(), "object" | "map") {
+            Value::Object(object_from_fields(fields, Some(&field.id), index))
+        } else {
+            sample_value(&field.type_name, name, index)
+        };
+        data.insert(name.to_string(), value);
     }
-    envelope.pack(
-        crate::scenes::encode_code(success_code),
-        "成功",
-        Value::Object(data),
-    )
+    data
 }
 
-fn sample_value(type_name: &str) -> Value {
+fn sample_value(type_name: &str, name: &str, index: Option<u32>) -> Value {
     match type_name.trim().to_ascii_lowercase().as_str() {
-        "integer" | "int" | "long" | "number" => json!(0),
+        "integer" | "int" | "long" | "number" => json!(index.unwrap_or(0)),
         "boolean" | "bool" => json!(false),
         "array" | "list" => json!([]),
         "object" | "map" => json!({}),
-        _ => json!(""),
+        "null" => Value::Null,
+        _ => match index {
+            Some(i) => json!(format!("{name}{i}")),
+            None => json!(""),
+        },
     }
 }
 

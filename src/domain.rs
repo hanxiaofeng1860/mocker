@@ -108,6 +108,32 @@ pub struct Endpoint {
     pub deprecated: bool,
     pub enabled: bool,
     pub current_scene: SceneKind,
+    #[serde(default)]
+    pub data_kind: DataKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DataKind {
+    #[default]
+    Object,
+    Array,
+}
+
+impl DataKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Object => "object",
+            Self::Array => "array",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim() {
+            "array" => Self::Array,
+            _ => Self::Object,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

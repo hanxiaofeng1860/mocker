@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use mocker::domain::{
-    Endpoint, Envelope, Field, FieldLoc, GlobalSettings, ManualSource, RequestLog, SceneKind,
+    DataKind, Endpoint, Envelope, Field, FieldLoc, GlobalSettings, ManualSource, RequestLog,
+    SceneKind,
 };
 use mocker::llm::{LlmError, ModelClient};
 use mocker::service::AppService;
@@ -105,6 +106,7 @@ async fn create_start_then_save_scene_body_hot_reloads() {
         deprecated: false,
         enabled: true,
         current_scene: SceneKind::Success,
+        data_kind: mocker::domain::DataKind::Object,
     };
     svc.save_endpoint(endpoint.clone()).unwrap();
     svc.save_scene_body(&endpoint.id, SceneKind::Success, SUCCESS_BODY.into())
@@ -168,6 +170,7 @@ fn import_paste_then_commit_writes_endpoints_fields_scenes_and_source_text() {
     assert_eq!(ep.source_text, paste);
     assert!(ep.enabled);
     assert_eq!(ep.current_scene, SceneKind::Success);
+    assert_eq!(ep.data_kind, DataKind::Object);
 
     let fields = store.lock().unwrap().list_fields(&ep.id).unwrap();
     assert!(fields
@@ -437,4 +440,337 @@ fn save_project_relabels_all_endpoint_scene_envelopes() {
         assert!(param.get("msg").is_none());
         assert!(param.get("data").is_none());
     }
+}
+
+#[test]
+fn regenerate_array_data_builds_three_sample_items() {
+    let (_dir, _, svc) = new_service(Noop);
+    let project = svc
+        .create_project("phone", 19021, "0000", "9999", Vec::new())
+        .unwrap();
+    let mut ep = svc.create_endpoint(&project.id).unwrap();
+    ep.data_kind = DataKind::Array;
+    svc.save_endpoint(ep.clone()).unwrap();
+    svc.save_fields(
+        &ep.id,
+        vec![
+            Field {
+                id: store::new_id(),
+                endpoint_id: ep.id.clone(),
+                location: FieldLoc::Response,
+                name: "id".into(),
+                name_zh: "编号".into(),
+                type_name: "Integer".into(),
+                required: true,
+                comment: String::new(),
+                enum_values: Vec::new(),
+                parent_id: None,
+            },
+            Field {
+                id: store::new_id(),
+                endpoint_id: ep.id.clone(),
+                location: FieldLoc::Response,
+                name: "title".into(),
+                name_zh: "标题".into(),
+                type_name: "String".into(),
+                required: true,
+                comment: String::new(),
+                enum_values: Vec::new(),
+                parent_id: None,
+            },
+        ],
+    )
+    .unwrap();
+    svc.regenerate_scene_from_fields(&ep.id, SceneKind::Success)
+        .unwrap();
+    let body: Value = serde_json::from_str(
+        &svc.get_scene(&ep.id, SceneKind::Success)
+            .unwrap()
+            .unwrap()
+            .body_json,
+    )
+    .unwrap();
+    let list = body["data"].as_array().expect("data array");
+    assert_eq!(list.len(), 3);
+    assert_eq!(list[0]["id"], json!(1));
+    assert_eq!(list[1]["id"], json!(2));
+    assert_eq!(list[2]["id"], json!(3));
+    assert_eq!(list[0]["title"], json!("title1"));
+    assert_eq!(list[2]["title"], json!("title3"));
+
+    svc.regenerate_scene_from_fields(&ep.id, SceneKind::Empty)
+        .unwrap();
+    let empty: Value = serde_json::from_str(
+        &svc.get_scene(&ep.id, SceneKind::Empty)
+            .unwrap()
+            .unwrap()
+            .body_json,
+    )
+    .unwrap();
+    assert_eq!(empty["data"], json!([]));
+}
+
+#[test]
+fn regenerate_array_uses_children_of_data_field_as_items() {
+    let (_dir, _, svc) = new_service(Noop);
+    let project = svc
+        .create_project("phone", 19023, "0000", "9999", Vec::new())
+        .unwrap();
+    let mut ep = svc.create_endpoint(&project.id).unwrap();
+    ep.data_kind = DataKind::Array;
+    svc.save_endpoint(ep.clone()).unwrap();
+    let data_id = store::new_id();
+    svc.save_fields(
+        &ep.id,
+        vec![
+            Field {
+                id: store::new_id(),
+                endpoint_id: ep.id.clone(),
+                location: FieldLoc::Response,
+                name: "code".into(),
+                name_zh: "响应编码".into(),
+                type_name: "Integer".into(),
+                required: false,
+                comment: String::new(),
+                enum_values: Vec::new(),
+                parent_id: None,
+            },
+            Field {
+                id: store::new_id(),
+                endpoint_id: ep.id.clone(),
+                location: FieldLoc::Response,
+                name: "msg".into(),
+                name_zh: "响应消息".into(),
+                type_name: "String".into(),
+                required: false,
+                comment: String::new(),
+                enum_values: Vec::new(),
+                parent_id: None,
+            },
+            Field {
+                id: data_id.clone(),
+                endpoint_id: ep.id.clone(),
+                location: FieldLoc::Response,
+                name: "data".into(),
+                name_zh: "响应体".into(),
+                type_name: "Object".into(),
+                required: false,
+                comment: String::new(),
+                enum_values: Vec::new(),
+                parent_id: None,
+            },
+            Field {
+                id: store::new_id(),
+                endpoint_id: ep.id.clone(),
+                location: FieldLoc::Response,
+                name: "adminName".into(),
+                name_zh: "管理员姓名".into(),
+                type_name: "String".into(),
+                required: false,
+                comment: String::new(),
+                enum_values: Vec::new(),
+                parent_id: Some(data_id),
+            },
+        ],
+    )
+    .unwrap();
+    svc.regenerate_scene_from_fields(&ep.id, SceneKind::Success)
+        .unwrap();
+    let body: Value = serde_json::from_str(
+        &svc.get_scene(&ep.id, SceneKind::Success)
+            .unwrap()
+            .unwrap()
+            .body_json,
+    )
+    .unwrap();
+    let list = body["data"].as_array().expect("data array");
+    assert_eq!(list.len(), 3);
+    assert_eq!(list[0]["adminName"], json!("adminName1"));
+    assert!(list[0].get("code").is_none());
+    assert!(list[0].get("msg").is_none());
+    assert!(list[0].get("data").is_none());
+}
+
+#[test]
+fn regenerate_object_uses_children_of_data_field() {
+    let (_dir, _, svc) = new_service(Noop);
+    let project = svc
+        .create_project("phone", 19024, "0000", "9999", Vec::new())
+        .unwrap();
+    let ep = svc.create_endpoint(&project.id).unwrap();
+    let data_id = store::new_id();
+    svc.save_fields(
+        &ep.id,
+        vec![
+            Field {
+                id: store::new_id(),
+                endpoint_id: ep.id.clone(),
+                location: FieldLoc::Response,
+                name: "code".into(),
+                name_zh: "响应编码".into(),
+                type_name: "Integer".into(),
+                required: false,
+                comment: String::new(),
+                enum_values: Vec::new(),
+                parent_id: None,
+            },
+            Field {
+                id: data_id.clone(),
+                endpoint_id: ep.id.clone(),
+                location: FieldLoc::Response,
+                name: "data".into(),
+                name_zh: "响应体".into(),
+                type_name: "Object".into(),
+                required: false,
+                comment: String::new(),
+                enum_values: Vec::new(),
+                parent_id: None,
+            },
+            Field {
+                id: store::new_id(),
+                endpoint_id: ep.id.clone(),
+                location: FieldLoc::Response,
+                name: "adminName".into(),
+                name_zh: "管理员姓名".into(),
+                type_name: "String".into(),
+                required: false,
+                comment: String::new(),
+                enum_values: Vec::new(),
+                parent_id: Some(data_id),
+            },
+        ],
+    )
+    .unwrap();
+    svc.regenerate_scene_from_fields(&ep.id, SceneKind::Success)
+        .unwrap();
+    let body: Value = serde_json::from_str(
+        &svc.get_scene(&ep.id, SceneKind::Success)
+            .unwrap()
+            .unwrap()
+            .body_json,
+    )
+    .unwrap();
+    assert_eq!(body["code"], "0000");
+    assert_eq!(body["data"]["adminName"], json!(""));
+    assert!(body["data"].get("code").is_none());
+    assert!(body["data"].get("data").is_none());
+}
+
+#[test]
+fn commit_import_infers_array_data_kind() {
+    let (_dir, _, svc) = new_service(Noop);
+    let project = svc
+        .create_project("phone", 19022, "0000", "9999", Vec::new())
+        .unwrap();
+    let drafts = mocker::import::validate_import(
+        r#"{
+          "endpoints": [{
+            "name": "列表",
+            "path": "/api/items",
+            "method": "GET",
+            "success_body": {
+              "code": "0000",
+              "msg": "成功",
+              "data": [{"id": 1}, {"id": 2}]
+            },
+            "response_fields": [
+              {"name": "id", "type": "Integer"}
+            ]
+          }]
+        }"#,
+    )
+    .unwrap();
+    svc.commit_import(&project.id, drafts).unwrap();
+    let ep = svc.list_endpoints(&project.id).unwrap().pop().unwrap();
+    assert_eq!(ep.data_kind, DataKind::Array);
+}
+
+#[test]
+fn switch_data_kind_keeps_last_success_per_kind() {
+    let (_dir, _, svc) = new_service(Noop);
+    let project = svc
+        .create_project("phone", 19024, "0000", "9999", Vec::new())
+        .unwrap();
+    let ep = svc.create_endpoint(&project.id).unwrap();
+    svc.save_fields(
+        &ep.id,
+        vec![Field {
+            id: store::new_id(),
+            endpoint_id: ep.id.clone(),
+            location: FieldLoc::Response,
+            name: "adminName".into(),
+            name_zh: "管理员".into(),
+            type_name: "String".into(),
+            required: true,
+            comment: String::new(),
+            enum_values: Vec::new(),
+            parent_id: None,
+        }],
+    )
+    .unwrap();
+    svc.regenerate_scene_from_fields(&ep.id, SceneKind::Success)
+        .unwrap();
+    svc.save_scene_body(
+        &ep.id,
+        SceneKind::Success,
+        r#"{
+          "code": "0000",
+          "msg": "成功",
+          "data": { "adminName": "张伟" }
+        }"#
+        .into(),
+    )
+    .unwrap();
+
+    svc.switch_data_kind(&ep.id, DataKind::Array).unwrap();
+    let array_default: Value = serde_json::from_str(
+        &svc.get_scene(&ep.id, SceneKind::Success)
+            .unwrap()
+            .unwrap()
+            .body_json,
+    )
+    .unwrap();
+    assert!(array_default["data"].is_array());
+    assert_eq!(array_default["data"][0]["adminName"], json!("adminName1"));
+
+    svc.save_scene_body(
+        &ep.id,
+        SceneKind::Success,
+        r#"{
+          "code": "0000",
+          "msg": "成功",
+          "data": [
+            { "adminName": "李娜" },
+            { "adminName": "王强" },
+            { "adminName": "赵敏" }
+          ]
+        }"#
+        .into(),
+    )
+    .unwrap();
+
+    svc.switch_data_kind(&ep.id, DataKind::Object).unwrap();
+    let object_again: Value = serde_json::from_str(
+        &svc.get_scene(&ep.id, SceneKind::Success)
+            .unwrap()
+            .unwrap()
+            .body_json,
+    )
+    .unwrap();
+    assert_eq!(object_again["data"]["adminName"], json!("张伟"));
+
+    svc.switch_data_kind(&ep.id, DataKind::Array).unwrap();
+    let array_again: Value = serde_json::from_str(
+        &svc.get_scene(&ep.id, SceneKind::Success)
+            .unwrap()
+            .unwrap()
+            .body_json,
+    )
+    .unwrap();
+    assert_eq!(array_again["data"][0]["adminName"], json!("李娜"));
+    assert_eq!(array_again["data"][2]["adminName"], json!("赵敏"));
+    assert_eq!(
+        svc.list_endpoints(&project.id).unwrap()[0].data_kind,
+        DataKind::Array
+    );
 }

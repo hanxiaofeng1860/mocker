@@ -1,4 +1,4 @@
-use mocker::domain::{Envelope, Field, FieldLoc, SceneKind};
+use mocker::domain::{DataKind, Envelope, Field, FieldLoc, SceneKind};
 use mocker::import::{
     attach_scenes, run_import, semantic_values_prompt, validate_import, ImportError,
 };
@@ -153,6 +153,7 @@ fn semantic_values_prompt_asks_for_realistic_values_and_json_only() {
             parent_id: None,
         }],
         r#"{"code":"0000","msg":"成功","data":{"city":""}}"#,
+        DataKind::Object,
     );
     assert!(prompt.contains("only return JSON object"));
     assert!(prompt.contains("city"));

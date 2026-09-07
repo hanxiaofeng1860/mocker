@@ -49,6 +49,7 @@ impl Harness {
             deprecated: false,
             enabled: true,
             current_scene: SceneKind::Success,
+            data_kind: mocker::domain::DataKind::Object,
         };
 
         {

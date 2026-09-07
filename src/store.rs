@@ -5,8 +5,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::domain::{
-    Endpoint, Envelope, Field, FieldLoc, GlobalSettings, ManualSource, Project, RequestLog, Scene,
-    SceneKind,
+    DataKind, Endpoint, Envelope, Field, FieldLoc, GlobalSettings, ManualSource, Project,
+    RequestLog, Scene, SceneKind,
 };
 
 const LOG_CAP: i64 = 500;
@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS endpoints (
     deprecated INTEGER NOT NULL,
     enabled INTEGER NOT NULL,
     current_scene TEXT NOT NULL,
+    data_kind TEXT NOT NULL DEFAULT 'object',
     UNIQUE (project_id, method, path),
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
@@ -59,6 +60,14 @@ CREATE TABLE IF NOT EXISTS scenes (
     http_status INTEGER NOT NULL,
     body_json TEXT NOT NULL,
     PRIMARY KEY (endpoint_id, kind),
+    FOREIGN KEY (endpoint_id) REFERENCES endpoints(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS data_kind_success (
+    endpoint_id TEXT NOT NULL,
+    data_kind TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    PRIMARY KEY (endpoint_id, data_kind),
     FOREIGN KEY (endpoint_id) REFERENCES endpoints(id) ON DELETE CASCADE
 );
 
@@ -124,6 +133,7 @@ impl Store {
         conn.execute_batch(SCHEMA).context("init sqlite schema")?;
         migrate_projects(&conn)?;
         migrate_settings(&conn)?;
+        migrate_endpoints(&conn)?;
         Ok(Self { conn })
     }
 
@@ -189,8 +199,8 @@ impl Store {
         self.conn.execute(
             "INSERT INTO endpoints (
                 id, project_id, method, path, name, notes, source_text,
-                deprecated, enabled, current_scene
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                deprecated, enabled, current_scene, data_kind
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(id) DO UPDATE SET
                 project_id = excluded.project_id,
                 method = excluded.method,
@@ -200,7 +210,8 @@ impl Store {
                 source_text = excluded.source_text,
                 deprecated = excluded.deprecated,
                 enabled = excluded.enabled,
-                current_scene = excluded.current_scene",
+                current_scene = excluded.current_scene,
+                data_kind = excluded.data_kind",
             params![
                 endpoint.id,
                 endpoint.project_id,
@@ -212,6 +223,7 @@ impl Store {
                 endpoint.deprecated,
                 endpoint.enabled,
                 endpoint.current_scene.as_str(),
+                endpoint.data_kind.as_str(),
             ],
         )?;
         Ok(())
@@ -220,7 +232,7 @@ impl Store {
     pub fn list_endpoints(&self, project_id: &str) -> Result<Vec<Endpoint>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, method, path, name, notes, source_text,
-                    deprecated, enabled, current_scene
+                    deprecated, enabled, current_scene, data_kind
              FROM endpoints WHERE project_id = ?1 ORDER BY path, method, id",
         )?;
         let rows = stmt.query_map(params![project_id], map_endpoint)?;
@@ -230,7 +242,7 @@ impl Store {
     pub fn get_endpoint(&self, id: &str) -> Result<Option<Endpoint>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, method, path, name, notes, source_text,
-                    deprecated, enabled, current_scene
+                    deprecated, enabled, current_scene, data_kind
              FROM endpoints WHERE id = ?1",
         )?;
         Ok(stmt.query_row(params![id], map_endpoint).optional()?)
@@ -301,6 +313,48 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn upsert_data_kind_success(
+        &self,
+        endpoint_id: &str,
+        data_kind: DataKind,
+        body_json: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO data_kind_success (endpoint_id, data_kind, body_json)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(endpoint_id, data_kind) DO UPDATE SET
+                body_json = excluded.body_json",
+            params![endpoint_id, data_kind.as_str(), body_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_data_kind_success(
+        &self,
+        endpoint_id: &str,
+        data_kind: DataKind,
+    ) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT body_json FROM data_kind_success
+             WHERE endpoint_id = ?1 AND data_kind = ?2",
+        )?;
+        Ok(stmt
+            .query_row(params![endpoint_id, data_kind.as_str()], |row| row.get(0))
+            .optional()?)
+    }
+
+    pub fn list_data_kind_success(&self, endpoint_id: &str) -> Result<Vec<(DataKind, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT data_kind, body_json FROM data_kind_success WHERE endpoint_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![endpoint_id], |row| {
+            let kind: String = row.get(0)?;
+            let body: String = row.get(1)?;
+            Ok((DataKind::parse(&kind), body))
+        })?;
+        collect_rows(rows)
     }
 
     pub fn get_scene(&self, endpoint_id: &str, kind: SceneKind) -> Result<Option<Scene>> {
@@ -520,6 +574,24 @@ fn migrate_projects(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_endpoints(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(endpoints)")?;
+    let existing: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if existing.is_empty() {
+        return Ok(());
+    }
+    if !existing.iter().any(|col| col == "data_kind") {
+        conn.execute(
+            "ALTER TABLE endpoints ADD COLUMN data_kind TEXT NOT NULL DEFAULT 'object'",
+            [],
+        )
+        .context("add column endpoints.data_kind")?;
+    }
+    Ok(())
+}
+
 fn migrate_settings(conn: &Connection) -> Result<()> {
     let mut stmt = conn.prepare("PRAGMA table_info(settings)")?;
     let existing: Vec<String> = stmt
@@ -563,6 +635,7 @@ fn map_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
 
 fn map_endpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<Endpoint> {
     let kind: String = row.get(9)?;
+    let data_kind: String = row.get(10)?;
     Ok(Endpoint {
         id: row.get(0)?,
         project_id: row.get(1)?,
@@ -574,6 +647,7 @@ fn map_endpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<Endpoint> {
         deprecated: row.get(7)?,
         enabled: row.get(8)?,
         current_scene: parse_scene_kind(9, &kind)?,
+        data_kind: DataKind::parse(&data_kind),
     })
 }
 

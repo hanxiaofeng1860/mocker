@@ -38,6 +38,7 @@ fn sample_endpoint(project_id: &str) -> Endpoint {
         deprecated: false,
         enabled: true,
         current_scene: SceneKind::Success,
+        data_kind: mocker::domain::DataKind::Object,
     }
 }
 
@@ -275,4 +276,47 @@ fn open_lifts_legacy_manual_columns_into_manual_sources() {
     assert_eq!(loaded.manual_sources[0].name, "deepseek");
     assert_eq!(loaded.manual_sources[0].api_key, "sk-old");
     assert_eq!(loaded.manual_sources[0].base_url, "http://127.0.0.1:1");
+}
+
+#[test]
+fn open_migrates_legacy_endpoints_with_object_data_kind() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("mocker.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                success_code TEXT NOT NULL,
+                fail_code TEXT NOT NULL,
+                default_headers TEXT NOT NULL
+            );
+            CREATE TABLE endpoints (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                name TEXT NOT NULL,
+                notes TEXT NOT NULL,
+                source_text TEXT NOT NULL,
+                deprecated INTEGER NOT NULL,
+                enabled INTEGER NOT NULL,
+                current_scene TEXT NOT NULL,
+                UNIQUE (project_id, method, path),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            INSERT INTO projects VALUES ('p1','old',18080,'0000','9999','[]');
+            INSERT INTO endpoints VALUES (
+                'e1','p1','POST','/api/a','a','','',0,1,'success'
+            );
+            "#,
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    let ep = store.get_endpoint("e1").unwrap().unwrap();
+    assert_eq!(ep.data_kind, mocker::domain::DataKind::Object);
 }

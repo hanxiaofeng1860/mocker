@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::domain::{Envelope, Field, FieldLoc, Scene, SceneKind};
+use crate::domain::{DataKind, Envelope, Field, FieldLoc, Scene, SceneKind};
 use crate::llm::{LlmError, ModelClient};
 use crate::scenes::{generate_non_success, scene_http_status};
 
@@ -108,11 +108,33 @@ pub fn semantic_values_prompt(
     path: &str,
     fields: &[Field],
     current_json: &str,
+    data_kind: DataKind,
 ) -> String {
+    let env = envelope.sanitized();
+    let data_wrapper = fields.iter().find(|field| {
+        field.location == FieldLoc::Response
+            && field.parent_id.is_none()
+            && field.name.trim() == env.data_key
+            && fields.iter().any(|child| {
+                child.location == FieldLoc::Response
+                    && child.parent_id.as_deref() == Some(field.id.as_str())
+            })
+    });
     let mut field_lines = String::new();
     for field in fields.iter().filter(|f| f.location == FieldLoc::Response) {
         let name = field.name.trim();
         if name.is_empty() {
+            continue;
+        }
+        if let Some(parent) = data_wrapper {
+            if field.id == parent.id
+                || (field.parent_id.is_none() && (name == env.code_key || name == env.msg_key))
+            {
+                continue;
+            }
+        } else if field.parent_id.is_none()
+            && (name == env.code_key || name == env.msg_key || name == env.data_key)
+        {
             continue;
         }
         let zh = field.name_zh.trim();
@@ -136,9 +158,18 @@ pub fn semantic_values_prompt(
         field_lines.push_str("（无字段表，请按当前 JSON 的键名推断语义）\n");
     }
     let skeleton = current_json.trim();
-    let env = envelope.sanitized();
     let code_key = &env.code_key;
     let msg_key = &env.msg_key;
+    let data_key = &env.data_key;
+    let nest_rule =
+        format!("- 顶层已有 {code_key}/{msg_key}/{data_key}，{data_key} 内不要再套一层信封。\n");
+    let array_rule = if data_kind == DataKind::Array {
+        format!(
+            "- {data_key} 必须是业务对象数组。每个元素只含业务字段，不要再套一层 {code_key}/{msg_key}/{data_key}。\n"
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"你是 mock 数据生成器。根据接口字段的英文名、中文名和类型，给 JSON 填入符合真实业务语义的示例值。
 
@@ -156,7 +187,7 @@ only return JSON object
 约束：
 - 保持字段名和 JSON 结构不变，只改 value。
 - {code_key} 必须使用项目成功码 {success_code}，{msg_key} 用「成功」。
-- 按语义填值：city/城市→国内城市名（如杭州、成都）；mobile/phone/手机→1 开头 11 位；name/姓名→中文姓名；org/机构→中文机构名；email→合法邮箱；id/sn→非空字符串；金额→合理数字；时间→ISO 或常见日期；枚举用字段说明里的合法值；列表 2～3 条。
+{nest_rule}{array_rule}- 按语义填值：city/城市→国内城市名（如杭州、成都）；mobile/phone/手机→1 开头 11 位；name/姓名→中文姓名；org/机构→中文机构名；email→合法邮箱；id/sn→非空字符串；金额→合理数字；时间→ISO 或常见日期；枚举用字段说明里的合法值；列表 2～3 条。
 - 不要编造字段表或当前 JSON 里没有的键。
 - 不要返回解释性文字。
 "#
