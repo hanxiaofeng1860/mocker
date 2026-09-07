@@ -6,6 +6,7 @@ use gpui_component::{
     form::{field, v_form},
     h_flex,
     input::{Input, InputState},
+    menu::{DropdownMenu, PopupMenuItem},
     notification::Notification,
     radio::{Radio, RadioGroup},
     select::{SearchableVec, Select, SelectEvent, SelectState},
@@ -17,7 +18,9 @@ use gpui_component::{
 use crate::domain::{GlobalSettings, ManualSource};
 use crate::llm::{list_models, HttpModelClient, ModelClient};
 use crate::service::AppService;
-use crate::sources::{home_dir, scan_sources, ModelSource, Protocol};
+use crate::sources::{
+    apply_selected_model, home_dir, scan_sources, ModelSource, Protocol,
+};
 use crate::store;
 
 use super::app::AppView;
@@ -27,6 +30,7 @@ use super::theme::{apply_ink_theme, apply_paper_theme};
 pub(super) struct SettingsState {
     sources: Vec<ModelSource>,
     selected_source_id: String,
+    selected_model: String,
     testing: bool,
     probing: bool,
     editing_manual_id: Option<String>,
@@ -66,9 +70,13 @@ impl SettingsState {
             )
             .searchable(true)
         });
+        let mut sources = scan_sources(&home_dir());
+        let mut selected_model = stored.selected_model.clone();
+        apply_selected_model(&mut sources, &stored.selected_source_id, &mut selected_model);
         let mut state = Self {
-            sources: scan_sources(&home_dir()),
+            sources,
             selected_source_id: stored.selected_source_id,
+            selected_model,
             testing: false,
             probing: false,
             editing_manual_id: None,
@@ -130,7 +138,7 @@ pub(super) fn client_for_selection(
     sources
         .iter()
         .find(|s| s.id == settings.selected_source_id && s.available)
-        .map(HttpModelClient::from_source)
+        .map(|source| HttpModelClient::from_source(source).with_model(&settings.selected_model))
 }
 
 pub(super) fn parse_protocol(raw: &str) -> Protocol {
@@ -332,8 +340,11 @@ fn source_row(source: &ModelSource, selected: &str, cx: &mut Context<AppView>) -
     } else {
         Tag::secondary().small().child("不可用")
     };
-    let subtitle = source_subtitle(source);
     let label = source.label.clone();
+    let muted = cx.theme().muted_foreground;
+    let mono = cx.theme().mono_font_family.clone();
+    let show_picker = checked && source.models.len() > 1;
+    let subtitle = source_subtitle(source);
 
     style::selected_card(
         h_flex()
@@ -347,36 +358,104 @@ fn source_row(source: &ModelSource, selected: &str, cx: &mut Context<AppView>) -
         checked,
         cx,
     )
-        .when(!available, |this| this.opacity(0.55))
-        .child(
-            h_flex()
-                .id(SharedString::from(format!("src-{id}")))
-                .flex_1()
-                .gap_2()
-                .items_center()
-                .cursor_pointer()
-                .when(available, |this| {
-                    this.on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_source(id.clone(), window, cx);
-                        cx.notify();
-                    }))
-                })
-                .child(style::checkbox_mark(checked, cx))
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .child(div().font_semibold().child(label))
-                        .child(
+    .when(!available, |this| this.opacity(0.55))
+    .child(
+        h_flex()
+            .id(SharedString::from(format!("src-{id}")))
+            .flex_1()
+            .min_w_0()
+            .gap_2()
+            .items_center()
+            .cursor_pointer()
+            .when(available, |this| {
+                this.on_click(cx.listener(move |this, _, window, cx| {
+                    this.select_source(id.clone(), window, cx);
+                    cx.notify();
+                }))
+            })
+            .child(style::checkbox_mark(checked, cx))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .items_start()
+                    .child(div().font_semibold().child(label))
+                    .when(!show_picker, |this| {
+                        this.child(
                             div()
                                 .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_color(muted)
+                                .font_family(mono.clone())
                                 .child(subtitle),
-                        ),
-                )
-                .child(badge),
+                        )
+                    })
+                    .when(show_picker, |this| {
+                        this.child(source_model_picker(source, muted, mono, cx))
+                    }),
+            )
+            .child(badge),
+    )
+    .into_any_element()
+}
+
+fn source_model_picker(
+    source: &ModelSource,
+    muted: Hsla,
+    mono: SharedString,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let proto = match source.protocol {
+        Protocol::AnthropicMessages => "anthropic",
+        Protocol::OpenAIChat => "openai",
+    };
+    let current = source.model.clone();
+    let models = source.models.clone();
+    let view = cx.entity().downgrade();
+    let trigger_id = SharedString::from(format!("src-model-{}", source.id));
+    h_flex()
+        .id(SharedString::from(format!("src-model-wrap-{}", source.id)))
+        .w_auto()
+        .flex_shrink_0()
+        .items_center()
+        .gap_1()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .text_sm()
+                .text_color(muted)
+                .font_family(mono)
+                .child(format!("{proto} · {current}")),
         )
-        .into_any_element()
+        .child(
+            Button::new(trigger_id)
+                .text()
+                .label("▾")
+                .text_sm()
+                .p_0()
+                .m_0()
+                .h_auto()
+                .w_auto()
+                .min_w(px(12.))
+                .min_h(px(0.))
+                .text_color(muted)
+                .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, _, _| {
+                    let mut menu = menu.scrollable(true);
+                    for m in &models {
+                        let picked = m.clone();
+                        let view = view.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(style::selected_caption(m == &current, m)).on_click(
+                                move |_, window, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.set_source_model(picked.clone(), window, cx);
+                                    });
+                                },
+                            ),
+                        );
+                    }
+                    menu
+                }),
+        )
 }
 
 fn manual_source_row(
@@ -490,8 +569,13 @@ impl AppView {
     }
 
     fn refresh_scan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sources = scan_sources(&home_dir());
+        let mut sources = scan_sources(&home_dir());
         if let Some(state) = self.settings.as_mut() {
+            apply_selected_model(
+                &mut sources,
+                &state.selected_source_id,
+                &mut state.selected_model,
+            );
             state.sources = sources;
         }
         self.persist_selection(window, cx);
@@ -499,6 +583,9 @@ impl AppView {
 
     fn select_source(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(state) = self.settings.as_mut() {
+            if state.selected_source_id == id {
+                return;
+            }
             let is_manual = state.manual_sources.iter().any(|m| m.id == id);
             let available = is_manual
                 || state
@@ -510,8 +597,36 @@ impl AppView {
                 return;
             }
             state.selected_source_id = id;
+            if let Some(manual) = state
+                .manual_sources
+                .iter()
+                .find(|m| m.id == state.selected_source_id)
+            {
+                state.selected_model = manual.model.clone();
+            } else if let Some(source) = state
+                .sources
+                .iter()
+                .find(|s| s.id == state.selected_source_id)
+            {
+                state.selected_model = source.model.clone();
+            }
         }
         self.persist_selection(window, cx);
+    }
+
+    fn set_source_model(&mut self, model: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(state) = self.settings.as_mut() {
+            state.selected_model = model.clone();
+            if let Some(source) = state
+                .sources
+                .iter_mut()
+                .find(|s| s.id == state.selected_source_id)
+            {
+                source.model = model;
+            }
+        }
+        self.persist_selection(window, cx);
+        cx.notify();
     }
 
     fn open_manual_dialog(
@@ -836,14 +951,12 @@ impl AppView {
         };
         let mut settings = GlobalSettings {
             selected_source_id: state.selected_source_id.clone(),
-            selected_model: String::new(),
+            selected_model: state.selected_model.clone(),
             manual_sources: state.manual_sources.clone(),
         };
         let sources = state.sources.clone();
         if let Some(manual) = settings.find_manual(&settings.selected_source_id) {
             settings.selected_model = manual.model.clone();
-        } else if let Some(source) = sources.iter().find(|s| s.id == state.selected_source_id) {
-            settings.selected_model = source.model.clone();
         }
         if let Err(err) = self.service.save_settings(&settings) {
             window.push_notification(Notification::error(err.to_string()), cx);
@@ -873,23 +986,27 @@ impl AppView {
                 window.push_notification(Notification::error("当前来源不可用"), cx);
                 return;
             };
-            let model_name = settings
-                .find_manual(&settings.selected_source_id)
-                .map(|m| {
-                    if m.name.trim().is_empty() {
-                        m.model.clone()
-                    } else {
-                        m.name.clone()
-                    }
-                })
-                .or_else(|| {
-                    state
-                        .sources
-                        .iter()
-                        .find(|s| s.id == settings.selected_source_id)
-                        .map(|s| s.model.clone())
-                })
-                .unwrap_or_default();
+            let model_name = if settings.selected_model.trim().is_empty() {
+                settings
+                    .find_manual(&settings.selected_source_id)
+                    .map(|m| {
+                        if m.name.trim().is_empty() {
+                            m.model.clone()
+                        } else {
+                            m.name.clone()
+                        }
+                    })
+                    .or_else(|| {
+                        state
+                            .sources
+                            .iter()
+                            .find(|s| s.id == settings.selected_source_id)
+                            .map(|s| s.model.clone())
+                    })
+                    .unwrap_or_default()
+            } else {
+                settings.selected_model.clone()
+            };
             (client, model_name)
         };
         self.spawn_model_test(client, model_name, window, cx);
@@ -966,17 +1083,11 @@ impl AppView {
 fn snapshot_settings(state: &SettingsState, _cx: &App) -> GlobalSettings {
     let mut settings = GlobalSettings {
         selected_source_id: state.selected_source_id.clone(),
-        selected_model: String::new(),
+        selected_model: state.selected_model.clone(),
         manual_sources: state.manual_sources.clone(),
     };
     if let Some(manual) = settings.find_manual(&settings.selected_source_id) {
         settings.selected_model = manual.model.clone();
-    } else if let Some(source) = state
-        .sources
-        .iter()
-        .find(|s| s.id == state.selected_source_id)
-    {
-        settings.selected_model = source.model.clone();
     }
     settings
 }
@@ -1015,6 +1126,7 @@ mod tests {
             protocol: Protocol::AnthropicMessages,
             base_url: "http://example.invalid".into(),
             model: "claude-haiku".into(),
+            models: vec!["claude-haiku".into(), "claude-sonnet".into()],
             available,
             reason: if available {
                 String::new()
@@ -1043,7 +1155,19 @@ mod tests {
             selected_source_id: "claude-code".into(),
             ..Default::default()
         };
-        assert!(client_for_selection(&settings, &[sample_source(true)]).is_some());
+        let client = client_for_selection(&settings, &[sample_source(true)]).unwrap();
+        assert_eq!(client.model(), "claude-haiku");
+    }
+
+    #[test]
+    fn client_for_selection_overrides_scan_model() {
+        let settings = GlobalSettings {
+            selected_source_id: "claude-code".into(),
+            selected_model: "claude-sonnet".into(),
+            ..Default::default()
+        };
+        let client = client_for_selection(&settings, &[sample_source(true)]).unwrap();
+        assert_eq!(client.model(), "claude-sonnet");
     }
 
     #[test]

@@ -19,6 +19,9 @@ pub struct ModelSource {
     pub protocol: Protocol,
     pub base_url: String,
     pub model: String,
+    /// 该来源配置里列出的可选模型。多于 1 个时设置页提供下拉切换。
+    #[serde(default)]
+    pub models: Vec<String>,
     pub available: bool,
     pub reason: String,
     pub credential_from: CredentialFrom,
@@ -69,11 +72,8 @@ fn scan_claude(home: &Path, out: &mut Vec<ModelSource>) {
     let token_ok = env
         .and_then(|e| map_str(e, "ANTHROPIC_AUTH_TOKEN"))
         .is_some();
-    let model = env
-        .and_then(|e| map_str(e, "ANTHROPIC_MODEL").or_else(|| map_str(e, "model")))
-        .or_else(|| json_str(&root, "model"))
-        .unwrap_or("")
-        .to_string();
+    let models = claude_models(env, &root);
+    let model = models.first().cloned().unwrap_or_default();
     let (available, reason) = availability(&base_url, token_ok, false);
     out.push(ModelSource {
         id: "claude-code".into(),
@@ -81,6 +81,7 @@ fn scan_claude(home: &Path, out: &mut Vec<ModelSource>) {
         protocol: Protocol::AnthropicMessages,
         base_url,
         model,
+        models,
         available,
         reason,
         credential_from: CredentialFrom::File {
@@ -117,7 +118,8 @@ fn scan_pi(home: &Path, out: &mut Vec<ModelSource>) {
             "anthropic-messages" => (Protocol::AnthropicMessages, true),
             _ => (Protocol::OpenAIChat, false),
         };
-        let model = first_pi_model(spec);
+        let models = pi_models(spec);
+        let model = models.first().cloned().unwrap_or_default();
         let label = map_str(spec, "name")
             .map(str::to_string)
             .unwrap_or_else(|| format!("Pi ({name})"));
@@ -132,6 +134,7 @@ fn scan_pi(home: &Path, out: &mut Vec<ModelSource>) {
             protocol,
             base_url,
             model,
+            models,
             available,
             reason,
             credential_from: CredentialFrom::File {
@@ -168,6 +171,7 @@ fn scan_codex(home: &Path, out: &mut Vec<ModelSource>) {
         } else {
             String::new()
         };
+        let models = unique_models(std::iter::once(model.clone()));
         // Codex keys live in env; availability is base_url plus a loopback TCP probe.
         let (available, reason) = availability(&base_url, true, true);
         out.push(ModelSource {
@@ -176,6 +180,7 @@ fn scan_codex(home: &Path, out: &mut Vec<ModelSource>) {
             protocol: Protocol::OpenAIChat,
             base_url,
             model,
+            models,
             available,
             reason,
             credential_from: CredentialFrom::File {
@@ -204,6 +209,7 @@ fn scan_grok(home: &Path, out: &mut Vec<ModelSource>) {
             continue;
         }
         let model = toml_table_str(spec, "model").unwrap_or(id).to_string();
+        let models = unique_models(std::iter::once(model.clone()));
         let label = toml_table_str(spec, "name")
             .map(str::to_string)
             .unwrap_or_else(|| format!("Grok ({id})"));
@@ -214,6 +220,7 @@ fn scan_grok(home: &Path, out: &mut Vec<ModelSource>) {
             protocol: Protocol::OpenAIChat,
             base_url,
             model,
+            models,
             available,
             reason,
             credential_from: CredentialFrom::File {
@@ -275,18 +282,66 @@ fn tcp_open(host: &str, port: u16) -> bool {
         .any(|addr| TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok())
 }
 
-fn first_pi_model(spec: &serde_json::Map<String, Value>) -> String {
-    let Some(models) = spec.get("models") else {
-        return String::new();
+/// 若已保存的模型仍属于该来源，则覆盖扫描默认值。
+pub fn apply_selected_model(sources: &mut [ModelSource], source_id: &str, stored: &mut String) {
+    let Some(source) = sources.iter_mut().find(|s| s.id == source_id) else {
+        return;
     };
-    if let Some(arr) = models.as_array() {
-        for item in arr {
-            if let Some(id) = json_str(item, "id").or_else(|| nonempty_str(item.as_str())) {
-                return id.to_string();
-            }
+    let resolved = resolve_source_model(source, stored);
+    source.model = resolved.clone();
+    *stored = resolved;
+}
+
+pub fn resolve_source_model(source: &ModelSource, stored: &str) -> String {
+    let stored = stored.trim();
+    if stored.is_empty() {
+        return source.model.clone();
+    }
+    if source.models.is_empty() || source.models.iter().any(|m| m == stored) {
+        stored.to_string()
+    } else {
+        source.model.clone()
+    }
+}
+
+fn claude_models(env: Option<&serde_json::Map<String, Value>>, root: &Value) -> Vec<String> {
+    const EXTRA: &[&str] = &[
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_SMALL_FAST_MODEL",
+    ];
+    let current = env
+        .and_then(|e| map_str(e, "ANTHROPIC_MODEL").or_else(|| map_str(e, "model")))
+        .or_else(|| json_str(root, "model"))
+        .unwrap_or("");
+    let extras = EXTRA.iter().filter_map(|key| env.and_then(|e| map_str(e, key)));
+    unique_models(std::iter::once(current).chain(extras).map(str::to_string))
+}
+
+fn pi_models(spec: &serde_json::Map<String, Value>) -> Vec<String> {
+    let Some(models) = spec.get("models").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    unique_models(models.iter().filter_map(|item| {
+        json_str(item, "id")
+            .or_else(|| nonempty_str(item.as_str()))
+            .map(str::to_string)
+    }))
+}
+
+fn unique_models(items: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in items {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out.iter().any(|m| m == trimmed) {
+            out.push(trimmed.to_string());
         }
     }
-    String::new()
+    out
 }
 
 fn read_json(path: &Path) -> Option<Value> {

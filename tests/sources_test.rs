@@ -3,7 +3,8 @@ use std::path::Path;
 
 use mocker::domain::GlobalSettings;
 use mocker::sources::{
-    home_dir, scan_sources, CredentialFrom, CredentialKind, ModelSource, Protocol,
+    apply_selected_model, home_dir, scan_sources, CredentialFrom, CredentialKind, ModelSource,
+    Protocol,
 };
 use tempfile::TempDir;
 
@@ -49,6 +50,7 @@ fn claude_settings_with_base_url_and_token_is_available() {
     assert_eq!(src.protocol, Protocol::AnthropicMessages);
     assert_eq!(src.base_url, "https://claude.example.com");
     assert_eq!(src.model, "claude-sonnet-4");
+    assert_eq!(src.models, vec!["claude-sonnet-4"]);
     assert_eq!(src.label, "Claude Code");
     match &src.credential_from {
         CredentialFrom::File { path, kind } => {
@@ -86,6 +88,7 @@ fn pi_provider_with_base_url_and_api_key() {
     assert_eq!(src.protocol, Protocol::OpenAIChat);
     assert_eq!(src.base_url, "https://pi.example.com/v1");
     assert_eq!(src.model, "pi-model");
+    assert_eq!(src.models, vec!["pi-model"]);
     match &src.credential_from {
         CredentialFrom::File { path, kind } => {
             assert!(path.ends_with("models.json"));
@@ -192,6 +195,116 @@ fn selected_claude_code_settings_json_does_not_contain_token() {
     let json = serde_json::to_string(&settings).unwrap();
     assert!(json.contains("claude-code"));
     assert!(!json.contains(CLAUDE_TOKEN));
+}
+
+#[test]
+fn pi_provider_collects_all_models_and_defaults_to_first() {
+    let home = TempDir::new().unwrap();
+    write_file(
+        home.path(),
+        ".pi/agent/models.json",
+        r#"{
+            "providers": {
+                "xsy-llm": {
+                    "baseUrl": "https://pi.example.com/v1",
+                    "api": "anthropic-messages",
+                    "apiKey": "sk-pi",
+                    "models": [
+                        { "id": "claude-glm-5.2" },
+                        { "id": "claude-deepseek-v4-flash" },
+                        "qwen3.7-max"
+                    ]
+                }
+            }
+        }"#,
+    );
+
+    let sources = scan_sources(home.path());
+    let src = by_id(&sources, "pi:xsy-llm");
+    assert_eq!(src.model, "claude-glm-5.2");
+    assert_eq!(
+        src.models,
+        vec![
+            "claude-glm-5.2",
+            "claude-deepseek-v4-flash",
+            "qwen3.7-max"
+        ]
+    );
+}
+
+#[test]
+fn claude_collects_default_env_models() {
+    let home = TempDir::new().unwrap();
+    write_file(
+        home.path(),
+        ".claude/settings.json",
+        r#"{
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://claude.example.com",
+                "ANTHROPIC_AUTH_TOKEN": "sk-ant-x",
+                "ANTHROPIC_MODEL": "claude-haiku-xsy[1M]",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-xsy",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-xsy",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-xsy[1M]"
+            }
+        }"#,
+    );
+
+    let sources = scan_sources(home.path());
+    let src = by_id(&sources, "claude-code");
+    assert_eq!(src.model, "claude-haiku-xsy[1M]");
+    assert_eq!(
+        src.models,
+        vec![
+            "claude-haiku-xsy[1M]",
+            "claude-opus-xsy",
+            "claude-sonnet-xsy"
+        ]
+    );
+}
+
+#[test]
+fn apply_selected_model_keeps_stored_if_listed() {
+    let mut sources = vec![ModelSource {
+        id: "pi:xsy".into(),
+        label: "Pi".into(),
+        protocol: Protocol::AnthropicMessages,
+        base_url: "https://example.com".into(),
+        model: "first".into(),
+        models: vec!["first".into(), "second".into()],
+        available: true,
+        reason: String::new(),
+        credential_from: CredentialFrom::File {
+            path: std::path::PathBuf::from("/tmp/models.json"),
+            kind: CredentialKind::PiProvider { name: "xsy".into() },
+        },
+    }];
+    let mut stored = "second".to_string();
+    apply_selected_model(&mut sources, "pi:xsy", &mut stored);
+    assert_eq!(stored, "second");
+    assert_eq!(sources[0].model, "second");
+}
+
+#[test]
+fn apply_selected_model_falls_back_when_unknown() {
+    let mut sources = vec![ModelSource {
+        id: "pi:xsy".into(),
+        label: "Pi".into(),
+        protocol: Protocol::AnthropicMessages,
+        base_url: "https://example.com".into(),
+        model: "first".into(),
+        models: vec!["first".into(), "second".into()],
+        available: true,
+        reason: String::new(),
+        credential_from: CredentialFrom::File {
+            path: std::path::PathBuf::from("/tmp/models.json"),
+            kind: CredentialKind::PiProvider { name: "xsy".into() },
+        },
+    }];
+    let mut stored = "gone".to_string();
+    apply_selected_model(&mut sources, "pi:xsy", &mut stored);
+    assert_eq!(stored, "first");
+    assert_eq!(sources[0].model, "first");
 }
 
 #[test]

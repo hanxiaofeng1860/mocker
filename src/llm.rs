@@ -45,6 +45,18 @@ impl HttpModelClient {
         }
     }
 
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        let model = model.into();
+        if !model.trim().is_empty() {
+            self.model = model;
+        }
+        self
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
     pub fn with_inline_key(
         protocol: Protocol,
         base_url: impl Into<String>,
